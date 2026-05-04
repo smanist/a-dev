@@ -905,7 +905,7 @@ def test_process_issue_writes_summary_when_review_is_disabled(
 def test_run_once_dispatches_queued_resume(monkeypatch, tmp_path: Path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text("repo: owner/repo\n", encoding="utf-8")
-    run_root = tmp_path / ".ai-runs"
+    run_root = tmp_path / ".a-dev" / "runs"
     _write_pr_job(run_root, 77, "ai/issue-77-existing")
     captured = {}
 
@@ -1029,8 +1029,8 @@ def test_process_parent_issue_runs_up_to_configured_child_limit(
         Issue(54, "Child 4", "Body 4", ["ai-child"], "open"),
     ]
     paths = {
-        "run_root": tmp_path / ".ai-runs",
-        "worktree_root": tmp_path / ".ai-worktrees",
+        "run_root": tmp_path / ".a-dev" / "runs",
+        "worktree_root": tmp_path / ".a-dev" / "worktrees",
     }
     captured = {"processed": [], "removed": [], "added": []}
 
@@ -1085,8 +1085,8 @@ def test_process_parent_issue_stops_on_child_failure(monkeypatch, tmp_path: Path
     parent = Issue(60, "Parent", "Parent body", ["ai-ready", "ai-parent"], "open")
     child = Issue(61, "Child", "Body", ["ai-child"], "open")
     paths = {
-        "run_root": tmp_path / ".ai-runs",
-        "worktree_root": tmp_path / ".ai-worktrees",
+        "run_root": tmp_path / ".a-dev" / "runs",
+        "worktree_root": tmp_path / ".a-dev" / "worktrees",
     }
     captured = {"added": [], "comments": []}
 
@@ -1135,8 +1135,8 @@ def test_process_parent_issue_passes_parent_memory_to_later_children(
         Issue(72, "Child 2", "Body 2", ["ai-child"], "open"),
     ]
     paths = {
-        "run_root": tmp_path / ".ai-runs",
-        "worktree_root": tmp_path / ".ai-worktrees",
+        "run_root": tmp_path / ".a-dev" / "runs",
+        "worktree_root": tmp_path / ".a-dev" / "worktrees",
     }
     follow_ups = []
 
@@ -1191,8 +1191,8 @@ def test_process_parent_issue_respects_stacked_pr_setting(monkeypatch, tmp_path:
     blocker = Issue(81, "Blocker", "Body", ["ai-child"], "open")
     dependent = Issue(82, "Dependent", "Body", ["ai-child"], "open")
     paths = {
-        "run_root": tmp_path / ".ai-runs",
-        "worktree_root": tmp_path / ".ai-worktrees",
+        "run_root": tmp_path / ".a-dev" / "runs",
+        "worktree_root": tmp_path / ".a-dev" / "worktrees",
     }
     processed = []
 

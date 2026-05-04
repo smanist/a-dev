@@ -2,11 +2,16 @@ from pathlib import Path
 
 import pytest  # type: ignore[reportMissingImports]
 
-from ai_issue_worker.config import ConfigError, config_from_dict, load_config, write_default_config
+from ai_issue_worker.config import (
+    ConfigError,
+    config_from_dict,
+    load_config,
+    write_default_config,
+)
 
 
 def test_default_config_generation_works(tmp_path: Path):
-    path = tmp_path / ".ai-issue-worker.yaml"
+    path = tmp_path / ".a-dev.yaml"
     write_default_config(path)
     config = load_config(path)
     assert config.repo == "owner/repo"
@@ -15,6 +20,10 @@ def test_default_config_generation_works(tmp_path: Path):
     assert config.issue_selection.respect_issue_dependencies is True
     assert config.issue_selection.allow_stacked_prs is False
     assert config.issue_selection.max_stack_depth == 3
+    assert config.paths.worktree_root == ".a-dev/worktrees"
+    assert config.paths.run_root == ".a-dev/runs"
+    assert config.paths.log_root == ".a-dev/logs"
+    assert config.paths.runtime_root == ".a-dev/runtime"
     assert config.agent.model == "gpt-5.4"
     assert config.agent.reasoning == "high"
     assert config.review.enabled is True
@@ -24,7 +33,7 @@ def test_default_config_generation_works(tmp_path: Path):
 
 
 def test_default_config_can_use_inferred_repo_and_branch(tmp_path: Path):
-    path = tmp_path / ".ai-issue-worker.yaml"
+    path = tmp_path / ".a-dev.yaml"
     write_default_config(path, repo="owner/repo", base_branch="trunk")
     config = load_config(path)
     assert config.repo == "owner/repo"
@@ -37,13 +46,17 @@ def test_config_missing_repo_fails_clearly():
 
 
 def test_config_accepts_agent_model_and_reasoning():
-    config = config_from_dict({"repo": "owner/repo", "agent": {"model": "gpt-5.4", "reasoning": "xhigh"}})
+    config = config_from_dict(
+        {"repo": "owner/repo", "agent": {"model": "gpt-5.4", "reasoning": "xhigh"}}
+    )
     assert config.agent.model == "gpt-5.4"
     assert config.agent.reasoning == "xhigh"
 
 
 def test_config_accepts_legacy_reasoning_effort():
-    config = config_from_dict({"repo": "owner/repo", "agent": {"reasoning_effort": "xhigh"}})
+    config = config_from_dict(
+        {"repo": "owner/repo", "agent": {"reasoning_effort": "xhigh"}}
+    )
     assert config.agent.reasoning == "xhigh"
 
 
@@ -54,7 +67,10 @@ def test_config_rejects_unknown_reasoning():
 
 def test_config_accepts_review_overrides():
     config = config_from_dict(
-        {"repo": "owner/repo", "review": {"enabled": False, "max_iterations": 2, "fix_priorities": ["P1"]}}
+        {
+            "repo": "owner/repo",
+            "review": {"enabled": False, "max_iterations": 2, "fix_priorities": ["P1"]},
+        }
     )
     assert config.review.enabled is False
     assert config.review.max_iterations == 2
@@ -62,7 +78,9 @@ def test_config_accepts_review_overrides():
 
 
 def test_config_accepts_disabling_issue_dependency_selection():
-    config = config_from_dict({"repo": "owner/repo", "issue_selection": {"respect_issue_dependencies": False}})
+    config = config_from_dict(
+        {"repo": "owner/repo", "issue_selection": {"respect_issue_dependencies": False}}
+    )
 
     assert config.issue_selection.respect_issue_dependencies is False
 
@@ -84,7 +102,9 @@ def test_config_accepts_stacked_pr_selection():
 
 def test_config_rejects_invalid_stack_depth():
     with pytest.raises(ConfigError, match="issue_selection.max_stack_depth"):
-        config_from_dict({"repo": "owner/repo", "issue_selection": {"max_stack_depth": 0}})
+        config_from_dict(
+            {"repo": "owner/repo", "issue_selection": {"max_stack_depth": 0}}
+        )
 
 
 def test_config_rejects_invalid_review_max_iterations():

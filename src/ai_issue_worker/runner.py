@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shlex
 from datetime import datetime
@@ -157,10 +158,16 @@ def check_dependencies(
     GHClient(config.repo).validate()
     allowed_prefixes: list[str] = []
     if root and paths:
+        relative_prefixes = []
         for key in ("worktree_root", "run_root", "log_root", "runtime_root"):
             prefix = _relative_prefix(root, paths[key])
             if prefix:
-                allowed_prefixes.append(prefix)
+                relative_prefixes.append(prefix)
+        if relative_prefixes:
+            common_parent = os.path.commonpath(relative_prefixes)
+            if common_parent and common_parent != ".":
+                allowed_prefixes.append(common_parent)
+        allowed_prefixes.extend(relative_prefixes)
     ensure_git_ok(
         config.base_branch,
         allow_dirty=config.git.allow_dirty_base,

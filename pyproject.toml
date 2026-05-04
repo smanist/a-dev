@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "local-ai-issue-worker"
+name = "a-dev"
 version = "0.1.0"
 description = "Local GitHub issue worker that uses a coding agent, git worktrees, and gh to open draft PRs."
 readme = "README.md"
@@ -14,7 +14,7 @@ dependencies = ["PyYAML>=6.0"]
 test = ["pytest>=8.0"]
 
 [project.scripts]
-ai-issue = "ai_issue_worker.cli:main"
+a-dev = "ai_issue_worker.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

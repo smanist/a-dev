@@ -1,4 +1,3 @@
-"""Local AI issue worker."""
+"""A-Dev issue worker."""
 
 __version__ = "0.1.0"
-

@@ -40,7 +40,7 @@ from .shell import run_cmd
 from .worktree import GitError, remove_worktree
 
 
-AI_ISSUE_GITIGNORE_ENTRIES = [".ai-logs", ".ai-runs", ".ai-runtime", ".ai-worktrees"]
+A_DEV_GITIGNORE_ENTRIES = [".a-dev/"]
 CREATE_MODES = ("auto", "single", "parent")
 
 
@@ -161,36 +161,36 @@ def _automation_label_specs(config) -> dict[str, tuple[str, str]]:
             specs[name] = (color, description)
 
     labels = config.issue_selection
-    add(labels.ready_label, "0E8A16", "Ready for the local AI issue worker to process.")
+    add(labels.ready_label, "0E8A16", "Ready for A-Dev to process.")
     add(
         labels.resume_label,
         "FB8C00",
-        "Queue a follow-up pass on an existing AI issue worker pull request.",
+        "Queue a follow-up pass on an existing A-Dev pull request.",
     )
     add(
         labels.working_label,
         "1D76DB",
-        "Currently being processed by the local AI issue worker.",
+        "Currently being processed by A-Dev.",
     )
     add(
         labels.failed_label,
         "D73A4A",
-        "The local AI issue worker failed to complete this issue.",
+        "A-Dev failed to complete this issue.",
     )
     add(
         labels.pr_opened_label,
         "5319E7",
-        "The local AI issue worker opened a pull request for this issue.",
+        "A-Dev opened a pull request for this issue.",
     )
     add(
         labels.parent_label,
         "6F42C1",
-        "Parent tracking issue for local AI issue worker sub-issue orchestration.",
+        "Parent tracking issue for A-Dev sub-issue orchestration.",
     )
     add(
         labels.child_label,
         "0969DA",
-        "Sub-issue owned by a local AI issue worker parent issue.",
+        "Sub-issue owned by an A-Dev parent issue.",
     )
     add(
         labels.parent_done_label,
@@ -201,22 +201,24 @@ def _automation_label_specs(config) -> dict[str, tuple[str, str]]:
         add(
             label,
             "FBCA04",
-            "Blocked from local AI issue worker selection until human action is taken.",
+            "Blocked from A-Dev selection until human action is taken.",
         )
     return specs
 
 
 def _ensure_gitignore_entries(path: Path = Path(".gitignore")) -> None:
     existing = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-    present = {line.strip() for line in existing}
-    missing = [entry for entry in AI_ISSUE_GITIGNORE_ENTRIES if entry not in present]
+    present = {line.strip().rstrip("/") for line in existing}
+    missing = [
+        entry for entry in A_DEV_GITIGNORE_ENTRIES if entry.rstrip("/") not in present
+    ]
     if not missing:
         return
 
     output = "\n".join(existing).rstrip()
     if output:
         output += "\n\n"
-    output += "# Local AI Issue Worker artifacts\n" + "\n".join(missing) + "\n"
+    output += "# A-Dev artifacts\n" + "\n".join(missing) + "\n"
     path.write_text(output, encoding="utf-8")
 
 
@@ -624,7 +626,7 @@ def cmd_create(args) -> int:
                 "issue description is required; pass text, --description-file, or pipe stdin"
             )
         title_hint = _derive_issue_title(description, args.title)
-        draft_dir = Path(tempfile.mkdtemp(prefix="ai-issue-create-"))
+        draft_dir = Path(tempfile.mkdtemp(prefix="a-dev-create-"))
         draft_file = draft_dir / (
             "issue-plan.json" if args.mode == "parent" else "issue.md"
         )
@@ -959,7 +961,7 @@ def cmd_clean(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="ai-issue")
+    parser = argparse.ArgumentParser(prog="a-dev")
     sub = parser.add_subparsers(dest="command", required=True)
 
     init = sub.add_parser("init")

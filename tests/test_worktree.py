@@ -25,10 +25,10 @@ def init_remote_backed_repo(path: Path):
 def test_ensure_git_ok_ignores_worker_runtime_paths(tmp_path: Path, monkeypatch):
     repo = init_remote_backed_repo(tmp_path)
     monkeypatch.chdir(repo)
-    runtime = repo / ".ai-runtime"
-    runtime.mkdir()
+    runtime = repo / ".a-dev" / "runtime"
+    runtime.mkdir(parents=True)
     (runtime / "worker.lock").write_text("123\n", encoding="utf-8")
-    ensure_git_ok("main", allowed_dirty_prefixes=[".ai-runtime"])
+    ensure_git_ok("main", allowed_dirty_prefixes=[".a-dev"])
 
 
 def test_ensure_git_ok_reports_real_dirty_paths(tmp_path: Path, monkeypatch):
@@ -36,4 +36,4 @@ def test_ensure_git_ok_reports_real_dirty_paths(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(repo)
     (repo / "dirty.py").write_text("x = 1\n", encoding="utf-8")
     with pytest.raises(GitError, match="dirty.py"):
-        ensure_git_ok("main", allowed_dirty_prefixes=[".ai-runtime"])
+        ensure_git_ok("main", allowed_dirty_prefixes=[".a-dev"])

@@ -2,7 +2,7 @@
 
 ## System Overview
 
-`local-ai-issue-worker` is a single-process Python CLI that automates a conservative issue-to-draft-PR workflow around three external tools:
+`a-dev` is a single-process Python CLI that automates a conservative issue-to-draft-PR workflow around three external tools:
 
 - `gh` for GitHub issue, label, comment, and PR operations.
 - `git` plus `git worktree` for isolated branches.
@@ -12,11 +12,11 @@ The codebase is structured as a thin set of adapters around one orchestrator. Th
 
 ## End-to-End Flow
 
-`ai-issue run-once` calls `runner.run_once()`, which performs these steps for a normal issue:
+`a-dev run-once` calls `runner.run_once()`, which performs these steps for a normal issue:
 
 1. Load and validate config.
 2. Resolve worker paths relative to the repo root.
-3. Acquire `.ai-runtime/worker.lock` to prevent concurrent runs.
+3. Acquire `.a-dev/runtime/worker.lock` to prevent concurrent runs.
 4. Check external dependencies with `gh --version`, `git --version`, the configured agent command, optional review command, GitHub auth, and git-base cleanliness.
 5. List `ai-ready` issues and filter them through label and dependency rules.
 6. Re-fetch the selected issue for fresh title/body content.
@@ -34,7 +34,7 @@ serially through the same normal issue pipeline. Each child produces its own
 branch and draft PR. The parent run appends `parent-memory.md` after each child
 so later child prompts receive prior summaries, PR URLs, and preserved decisions.
 
-`ai-issue start` runs the same `run_once()` loop inside `daemon.daemon_loop()`. The daemon itself is intentionally simple: PID file, status file, and a sleep loop.
+`a-dev start` runs the same `run_once()` loop inside `daemon.daemon_loop()`. The daemon itself is intentionally simple: PID file, status file, and a sleep loop.
 
 ## Main Control Surfaces
 
@@ -61,7 +61,7 @@ This is the repo's center of gravity.
 - Applies diff policy.
 - Writes job records and artifact logs.
 - Finalizes GitHub labels/comments and git cleanup.
-- Supports explicit continuation of an existing ai-issue PR by reusing the recorded branch/worktree and updating the existing PR instead of opening a new one.
+- Supports explicit continuation of an existing A-Dev PR by reusing the recorded branch/worktree and updating the existing PR instead of opening a new one.
 - Supports queued continuation work through the `ai-resume` label so the daemon and `run-once` path can process PR revisions alongside new issues.
 
 When making behavioral changes, start here and verify the corresponding tests in `tests/test_runner_review.py`.
@@ -96,12 +96,12 @@ When making behavioral changes, start here and verify the corresponding tests in
 
 The filesystem is the operational state store:
 
-- `.ai-worktrees/issue-<n>/`: checked-out worktree for a run.
-- `.ai-runs/issue-<n>/`: run history and latest artifacts.
-- `.ai-logs/worker.log`: daemon stdout/stderr.
-- `.ai-runtime/worker.lock`: non-blocking lock file.
-- `.ai-runtime/worker.pid`: daemon PID.
-- `.ai-runtime/worker.status.json`: daemon status snapshot.
+- `.a-dev/worktrees/issue-<n>/`: checked-out worktree for a run.
+- `.a-dev/runs/issue-<n>/`: run history and latest artifacts.
+- `.a-dev/logs/worker.log`: daemon stdout/stderr.
+- `.a-dev/runtime/worker.lock`: non-blocking lock file.
+- `.a-dev/runtime/worker.pid`: daemon PID.
+- `.a-dev/runtime/worker.status.json`: daemon status snapshot.
 
 Per-issue run directories contain both timestamped files and latest aliases. Common artifacts:
 

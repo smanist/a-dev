@@ -11,7 +11,7 @@ This repository is a local automation worker that turns GitHub issues into draft
 5. Run a separate Codex review loop and fix blocking findings.
 6. Enforce diff policy, commit, push, and open a draft PR.
 
-For larger requests, `ai-issue create --mode parent` can create a schedulable
+For larger requests, `a-dev create --mode parent` can create a schedulable
 parent issue with GitHub sub-issues and native `blocked_by` dependency edges.
 When the worker selects an `ai-ready` + `ai-parent` issue, it orchestrates
 eligible child issues serially. Each child still gets its own worktree, Codex
@@ -34,13 +34,13 @@ The repo is intentionally small. Most behavior lives in `src/ai_issue_worker/run
 
 ## Runtime Model
 
-- Config is loaded from `.ai-issue-worker.yaml`.
-- Local state lives under `.ai-worktrees`, `.ai-runs`, `.ai-logs`, and `.ai-runtime`.
-- The worker uses filesystem artifacts as its audit trail. Each issue gets a run directory under `.ai-runs/issue-<n>/`.
+- Config is loaded from `.a-dev.yaml`.
+- Local state lives under `.a-dev/`.
+- The worker uses filesystem artifacts as its audit trail. Each issue gets a run directory under `.a-dev/runs/issue-<n>/`.
 - Successful PR open/update flows also write a local `summary.md` artifact for future resume runs.
 - Parent runs write `parent-plan.json` and `parent-memory.md` in the parent run directory to carry durable context across child Codex sessions.
 - `latest.json`, `prompt.md`, `verify.log`, `review.md`, `summary.md`, `pr_body.md`, and `codex.log` are convenience pointers to the newest timestamped artifacts.
-- The worker lock is `.ai-runtime/worker.lock`. Daemon status is `.ai-runtime/worker.status.json`.
+- The worker lock is `.a-dev/runtime/worker.lock`. Daemon status is `.a-dev/runtime/worker.status.json`.
 
 ## Invariants To Preserve
 

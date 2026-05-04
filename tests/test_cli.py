@@ -27,17 +27,14 @@ def test_cli_init_smoke(tmp_path: Path, monkeypatch):
     assert cli.main(["init", "--path", "config.yaml", "--no-create-labels"]) == 0
     assert (tmp_path / "config.yaml").exists()
     gitignore = (tmp_path / ".gitignore").read_text(encoding="utf-8")
-    assert ".ai-logs" in gitignore
-    assert ".ai-runs" in gitignore
-    assert ".ai-runtime" in gitignore
-    assert ".ai-worktrees" in gitignore
+    assert ".a-dev/" in gitignore
 
 
 def test_cli_init_appends_missing_gitignore_entries_once(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
     gitignore = tmp_path / ".gitignore"
-    gitignore.write_text("dist\n.ai-runs\n", encoding="utf-8")
+    gitignore.write_text("dist\n.a-dev\n", encoding="utf-8")
 
     assert cli.main(["init", "--path", "config.yaml", "--no-create-labels"]) == 0
     assert (
@@ -46,10 +43,8 @@ def test_cli_init_appends_missing_gitignore_entries_once(tmp_path: Path, monkeyp
     )
 
     lines = gitignore.read_text(encoding="utf-8").splitlines()
-    assert lines.count(".ai-runs") == 1
-    assert lines.count(".ai-logs") == 1
-    assert lines.count(".ai-runtime") == 1
-    assert lines.count(".ai-worktrees") == 1
+    assert lines.count(".a-dev") == 1
+    assert lines.count(".a-dev/") == 0
 
 
 def test_cli_init_infers_repo_and_branch_and_creates_labels(
@@ -129,7 +124,7 @@ def test_cli_list_smoke_with_fake_gh(tmp_path: Path, monkeypatch, capsys):
 
 
 def test_cli_list_defaults_to_dotfile_config(tmp_path: Path, monkeypatch, capsys):
-    path = tmp_path / ".ai-issue-worker.yaml"
+    path = tmp_path / ".a-dev.yaml"
     path.write_text("repo: owner/repo\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "GHClient", FakeGH)
@@ -138,7 +133,7 @@ def test_cli_list_defaults_to_dotfile_config(tmp_path: Path, monkeypatch, capsys
 
 
 def test_run_once_passes_model_and_reasoning_overrides(tmp_path: Path, monkeypatch):
-    path = tmp_path / ".ai-issue-worker.yaml"
+    path = tmp_path / ".a-dev.yaml"
     path.write_text("repo: owner/repo\n", encoding="utf-8")
     captured = {}
 
@@ -153,13 +148,13 @@ def test_run_once_passes_model_and_reasoning_overrides(tmp_path: Path, monkeypat
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "run_once", fake_run_once)
     assert cli.main(["run-once", "--model", "gpt-5.4", "--reasoning", "xhigh"]) == 0
-    assert captured["config_path"] == Path(".ai-issue-worker.yaml")
+    assert captured["config_path"] == Path(".a-dev.yaml")
     assert captured["model"] == "gpt-5.4"
     assert captured["reasoning"] == "xhigh"
 
 
 def test_resume_passes_comment_and_overrides(tmp_path: Path, monkeypatch):
-    path = tmp_path / ".ai-issue-worker.yaml"
+    path = tmp_path / ".a-dev.yaml"
     path.write_text("repo: owner/repo\n", encoding="utf-8")
     captured = {}
 
@@ -192,7 +187,7 @@ def test_resume_passes_comment_and_overrides(tmp_path: Path, monkeypatch):
         )
         == 0
     )
-    assert captured["config_path"] == Path(".ai-issue-worker.yaml")
+    assert captured["config_path"] == Path(".a-dev.yaml")
     assert captured["issue_number"] == 123
     assert captured["manual_note"] == "Address the reviewer notes"
     assert captured["model"] == "gpt-5.4-mini"
@@ -202,7 +197,7 @@ def test_resume_passes_comment_and_overrides(tmp_path: Path, monkeypatch):
 def test_resume_queue_adds_resume_label_and_comment(
     tmp_path: Path, monkeypatch, capsys
 ):
-    path = tmp_path / ".ai-issue-worker.yaml"
+    path = tmp_path / ".a-dev.yaml"
     path.write_text("repo: owner/repo\n", encoding="utf-8")
     captured = {}
 
