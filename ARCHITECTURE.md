@@ -102,6 +102,7 @@ The filesystem is the operational state store:
 - `.a-dev/runtime/worker.lock`: non-blocking lock file.
 - `.a-dev/runtime/worker.pid`: daemon PID.
 - `.a-dev/runtime/worker.status.json`: daemon status snapshot.
+- `.a-dev/kanban.md`: Obsidian-friendly task board rendered from latest issue run artifacts by `a-dev kanban`.
 
 Per-issue run directories contain both timestamped files and latest aliases. Common artifacts:
 

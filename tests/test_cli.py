@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from ai_issue_worker import cli
@@ -459,6 +460,87 @@ def test_cli_create_rejects_invalid_parent_plan_before_github(
         )
         == 1
     )
+
+
+def test_cli_kanban_writes_obsidian_markdown_from_run_artifacts(
+    tmp_path: Path, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".a-dev.yaml").write_text("repo: owner/repo\n", encoding="utf-8")
+    run_root = tmp_path / ".a-dev" / "runs"
+
+    success_dir = run_root / "issue-42"
+    success_dir.mkdir(parents=True)
+    success_record = {
+        "issue_number": 42,
+        "issue_title": "Add kanban",
+        "branch_name": "ai/issue-42-add-kanban",
+        "worktree_path": str(tmp_path / "worktrees" / "issue-42"),
+        "status": "pr_opened",
+        "started_at": "2026-04-23T00:00:00Z",
+        "base_branch": "main",
+        "stack_depth": 0,
+        "blocker_issue_numbers": [],
+        "finished_at": "2026-04-23T00:05:00Z",
+        "pr_url": "https://github.com/owner/repo/pull/99",
+        "error_summary": None,
+        "changed_files": ["src/ai_issue_worker/cli.py"],
+        "verifier_passed": True,
+    }
+    (success_dir / "latest.json").write_text(
+        json.dumps(success_record), encoding="utf-8"
+    )
+    (success_dir / "summary.md").write_text(
+        "## What changed\n"
+        "- Added kanban markdown generation.\n"
+        "- Aggregated latest run summaries instead of review rounds.\n"
+        "\n"
+        "## Follow-up context\n"
+        "- No follow-up needed.\n",
+        encoding="utf-8",
+    )
+    (success_dir / "codex-20260423.log").write_text(
+        "input tokens: 100\noutput tokens: 20\ntotal tokens: 120\n",
+        encoding="utf-8",
+    )
+
+    failed_dir = run_root / "issue-43"
+    failed_dir.mkdir(parents=True)
+    failed_record = {
+        "issue_number": 43,
+        "issue_title": "Fail verifier",
+        "branch_name": "ai/issue-43-fail-verifier",
+        "worktree_path": str(tmp_path / "worktrees" / "issue-43"),
+        "status": "verify_failed",
+        "started_at": "2026-04-22T00:00:00Z",
+        "base_branch": "main",
+        "stack_depth": 0,
+        "blocker_issue_numbers": [],
+        "finished_at": "2026-04-22T00:05:00Z",
+        "pr_url": None,
+        "error_summary": "pytest failed in test_cli.py",
+        "changed_files": ["tests/test_cli.py"],
+        "verifier_passed": False,
+    }
+    (failed_dir / "latest.json").write_text(json.dumps(failed_record), encoding="utf-8")
+
+    assert cli.main(["kanban"]) == 0
+
+    output = (tmp_path / ".a-dev" / "kanban.md").read_text(encoding="utf-8")
+    assert output.startswith("## repo\n")
+    assert "- [x] **Issue 42**: <br>- Added kanban markdown generation.;" in output
+    assert (
+        "Token usage: input=100 output=20 total=120 across 1/1 Codex run(s)" in output
+    )
+    assert (
+        "PR status: opened or updated at https://github.com/owner/repo/pull/99"
+        in output
+    )
+    assert "- [ ] **Issue 43**: <br>- Failure: pytest failed in test_cli.py;" in output
+    assert "PR status: not opened; latest run status verify_failed" in output
+    captured = capsys.readouterr()
+    assert captured.out == output
+    assert "wrote " in captured.err
 
 
 def test_parse_issue_draft_file_requires_title_line():

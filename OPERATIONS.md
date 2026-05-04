@@ -48,6 +48,12 @@ Inspect local worker state:
 a-dev inspect
 ```
 
+Generate an Obsidian-friendly kanban checklist from `.a-dev/runs`:
+
+```bash
+a-dev kanban
+```
+
 Retry a failed issue:
 
 ```bash
@@ -92,6 +98,12 @@ For a specific issue run:
 2. Read `.a-dev/runs/issue-<n>/artifacts.log` for the artifact timeline.
 3. Read `.a-dev/runs/issue-<n>/prompt.md` to see the latest prompt the worker sent.
 4. Read `.a-dev/runs/issue-<n>/codex.log`, `verify.log`, `review.md`, `summary.md`, and `pr_body.md` depending on the failure stage.
+
+For a local markdown board:
+
+1. Run `a-dev kanban` to refresh `.a-dev/kanban.md`.
+2. Use `a-dev kanban --issue <n>` to render only one issue.
+3. Use `a-dev kanban --output path/to/file.md` to write somewhere else.
 
 For a parent issue run:
 

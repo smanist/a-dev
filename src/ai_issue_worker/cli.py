@@ -37,6 +37,7 @@ from .runner import (
     workable_issues,
 )
 from .shell import run_cmd
+from .token_usage import format_token_usage, parse_token_usage, sum_token_usages
 from .worktree import GitError, remove_worktree
 
 
@@ -554,6 +555,120 @@ def _generate_issue_draft(
     return plan
 
 
+def _repo_display_name(repo: str) -> str:
+    parts = [part for part in repo.split("/") if part]
+    return parts[-1] if parts else repo
+
+
+def _single_line_markdown(text: str, limit: int = 220) -> str:
+    line = " ".join(text.strip().split())
+    line = line.replace("<br>", " ").replace("<br/>", " ").replace("<br />", " ")
+    if len(line) <= limit:
+        return line
+    return line[: limit - 1].rstrip(" .,;:") + "."
+
+
+def _strip_markdown_prefix(line: str) -> str:
+    stripped = line.strip()
+    for prefix in ("- [x] ", "- [ ] ", "- ", "* "):
+        if stripped.startswith(prefix):
+            return stripped.removeprefix(prefix).strip()
+    if len(stripped) > 3 and stripped[0].isdigit():
+        marker = stripped.split(" ", 1)[0]
+        if marker.endswith(".") and marker[:-1].isdigit():
+            return stripped[len(marker) :].strip()
+    return stripped
+
+
+def _summary_bullets(run_dir: Path, job, max_items: int = 3) -> list[str]:
+    summary_path = run_dir / "summary.md"
+    bullets: list[str] = []
+    if summary_path.exists():
+        try:
+            lines = summary_path.read_text(
+                encoding="utf-8", errors="replace"
+            ).splitlines()
+        except OSError:
+            lines = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            item = _single_line_markdown(_strip_markdown_prefix(stripped))
+            if item and item not in bullets:
+                bullets.append(item)
+            if len(bullets) >= max_items:
+                break
+
+    if bullets:
+        return bullets
+
+    if job.error_summary:
+        bullets.append(f"Failure: {_single_line_markdown(job.error_summary)}")
+    if job.changed_files:
+        shown = job.changed_files[:5]
+        suffix = (
+            f", +{len(job.changed_files) - len(shown)} more"
+            if len(shown) < len(job.changed_files)
+            else ""
+        )
+        bullets.append(f"Changed files: {', '.join(shown)}{suffix}")
+    if job.verifier_passed is not None:
+        bullets.append(f"Verification: {'passed' if job.verifier_passed else 'failed'}")
+    if not bullets:
+        bullets.append(f"Run status: {job.status}")
+    return bullets[:max_items]
+
+
+def _token_usage_bullet(run_dir: Path) -> str:
+    usages = []
+    seen = 0
+    for log_path in sorted(run_dir.glob("codex-*.log")):
+        seen += 1
+        try:
+            usage = parse_token_usage(
+                log_path.read_text(encoding="utf-8", errors="replace")
+            )
+        except OSError:
+            usage = None
+        if usage:
+            usages.append(usage)
+    total = sum_token_usages(usages)
+    return f"Token usage: {format_token_usage(total)} across {len(usages)}/{seen} Codex run(s)"
+
+
+def _successful_commit_status(status: str) -> bool:
+    return status in {"committed", "pushed", "pr_opened"}
+
+
+def _pr_status_bullet(job) -> str:
+    if job.pr_url and job.status == "pr_opened":
+        return f"PR status: opened or updated at {job.pr_url}"
+    if job.pr_url:
+        return f"PR status: existing PR {job.pr_url}; latest run status {job.status}"
+    return f"PR status: not opened; latest run status {job.status}"
+
+
+def build_kanban_markdown(config, run_root: Path, issue: int | None = None) -> str:
+    jobs = [
+        job
+        for job in recent_jobs(run_root)
+        if issue is None or job.issue_number == issue
+    ]
+    lines = [f"## {_repo_display_name(config.repo)}"]
+    for job in jobs:
+        run_dir = issue_run_dir(run_root, job.issue_number)
+        checkbox = "x" if _successful_commit_status(job.status) else " "
+        bullets = [
+            *_summary_bullets(run_dir, job),
+            _token_usage_bullet(run_dir),
+            _pr_status_bullet(job),
+        ]
+        inline = " ".join(f"<br>- {bullet};" for bullet in bullets)
+        lines.append(f"- [{checkbox}] **Issue {job.issue_number}**: {inline}")
+    return "\n".join(lines) + "\n"
+
+
 def cmd_init(args) -> int:
     repo = args.repo or _infer_repo_from_git() or "owner/repo"
     base_branch = args.base_branch or _infer_base_branch_from_git() or "main"
@@ -704,6 +819,28 @@ def cmd_inspect(args) -> int:
             print("open ai-working issues:")
             for issue in data["open_working_issues"]:
                 print(f"  #{issue['number']}: {issue['title']}")
+    return 0
+
+
+def cmd_kanban(args) -> int:
+    try:
+        config = _load(args.config)
+    except ConfigError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    paths = _paths(config, Path.cwd())
+    output_path = (
+        Path(args.output) if args.output else paths["run_root"].parent / "kanban.md"
+    )
+    markdown = build_kanban_markdown(config, paths["run_root"], issue=args.issue)
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(markdown, encoding="utf-8")
+    except OSError as exc:
+        print(f"failed to write kanban output: {exc}", file=sys.stderr)
+        return 1
+    print(markdown, end="")
+    print(f"wrote {output_path}", file=sys.stderr)
     return 0
 
 
@@ -1004,6 +1141,12 @@ def build_parser() -> argparse.ArgumentParser:
     inspect.add_argument("--issue", type=int)
     inspect.add_argument("--json", action="store_true")
     inspect.set_defaults(func=cmd_inspect)
+
+    kanban = sub.add_parser("kanban")
+    kanban.add_argument("--config", default=DEFAULT_CONFIG_PATH)
+    kanban.add_argument("--issue", type=int)
+    kanban.add_argument("--output")
+    kanban.set_defaults(func=cmd_kanban)
 
     start = sub.add_parser("start")
     start.add_argument("--config", default=DEFAULT_CONFIG_PATH)

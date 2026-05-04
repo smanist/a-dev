@@ -129,6 +129,19 @@ job records, PR bodies, resume summaries, and latest-file updates. After each Co
 manifest records token usage when the configured Codex command exposes it in
 stdout/stderr, plus a cumulative total across Codex logs in that issue directory.
 
+Generate an Obsidian-friendly kanban checklist from local run artifacts:
+
+```bash
+a-dev kanban
+```
+
+The command writes `.a-dev/kanban.md` and prints the same Markdown. It creates
+one checkbox row per latest issue run, marks rows checked after a successful
+commit/push/PR-open status, summarizes the net `summary.md` contents when
+available, and always includes token usage plus PR status bullets. Use
+`--issue <number>` to render one issue or `--output path/to/file.md` to choose a
+different destination.
+
 Start a simple background loop:
 
 ```bash
