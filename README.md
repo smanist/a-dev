@@ -165,9 +165,26 @@ a-dev resume 123 --queue --comment "Address the latest review feedback and keep 
 
 Queued resume work is represented by the `ai-resume` label. The command above also posts the optional note as a GitHub issue comment so a later background run can include it in the continuation prompt.
 
+After reviewing an opened PR locally, committing any manual edits, and pushing
+the branch, merge it explicitly from local worker state:
+
+```bash
+a-dev merge 123 --method merge
+```
+
+`merge` finds the recorded PR for issue `123`, verifies the local branch is clean
+and matches `origin/<branch>` when that branch exists locally, asks GitHub to
+merge the PR, removes A-Dev PR/resume labels, records a `pr_merged` job, and
+deletes the local and remote branch. Use `--method squash` or `--method rebase`
+for those GitHub merge modes, `--auto` to enable GitHub auto-merge when branch
+protection requirements are still pending, `--admin` to use administrator
+privileges, `--ready` to mark a draft PR ready before merging, `--dry-run` to
+preview, or `--keep-branch` to leave the branch in place. Auto-merge records
+`pr_auto_merge_enabled` and keeps the branch because the PR has not merged yet.
+
 ## Safety
 
-V1 is not sandboxed. Run it only on trusted repositories and keep draft PR review enabled. The worker does not auto-merge.
+V1 is not sandboxed. Run it only on trusted repositories and keep draft PR review enabled. The worker does not auto-merge during background issue processing; merging requires an explicit `a-dev merge` operator command.
 
 GitHub issue comments, issue bodies, and PR bodies are scrubbed before upload to
 mask local user-home paths such as `/Users/name/...`.

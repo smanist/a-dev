@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -26,7 +26,7 @@ from .config import (
 from .codex_backend import CodexBackend
 from .daemon import pid_alive, read_json, write_status
 from .github_gh import GHClient, GHError
-from .jobs import issue_run_dir, recent_jobs
+from .jobs import issue_run_dir, recent_jobs, utc_iso, write_job_record
 from .locking import lock_status
 from .prompt import build_issue_draft_prompt
 from .runner import (
@@ -38,11 +38,22 @@ from .runner import (
 )
 from .shell import run_cmd
 from .token_usage import format_token_usage, parse_token_usage, sum_token_usages
-from .worktree import GitError, remove_worktree
+from .worktree import (
+    GitError,
+    current_branch,
+    delete_local_branch,
+    delete_remote_branch,
+    ensure_branch_pushed,
+    ensure_worktree_clean,
+    local_branch_exists,
+    remove_worktree,
+    switch_branch,
+)
 
 
 A_DEV_GITIGNORE_ENTRIES = [".a-dev/"]
 CREATE_MODES = ("auto", "single", "parent")
+MERGE_METHODS = ("merge", "squash", "rebase")
 
 
 @dataclass(frozen=True)
@@ -638,10 +649,14 @@ def _token_usage_bullet(run_dir: Path) -> str:
 
 
 def _successful_commit_status(status: str) -> bool:
-    return status in {"committed", "pushed", "pr_opened"}
+    return status in {"committed", "pushed", "pr_opened", "pr_merged"}
 
 
 def _pr_status_bullet(job) -> str:
+    if job.pr_url and job.status == "pr_merged":
+        return f"PR status: merged at {job.pr_url}"
+    if job.pr_url and job.status == "pr_auto_merge_enabled":
+        return f"PR status: auto-merge enabled at {job.pr_url}"
     if job.pr_url and job.status == "pr_opened":
         return f"PR status: opened or updated at {job.pr_url}"
     if job.pr_url:
@@ -1051,6 +1066,129 @@ def cmd_resume(args) -> int:
     )
 
 
+def _latest_open_pr_job(run_root: Path, issue_number: int):
+    for job in recent_jobs(run_root):
+        if job.issue_number != issue_number:
+            continue
+        if (
+            job.status not in {"pr_opened", "pr_auto_merge_enabled"}
+            or not job.pr_url
+            or not job.branch_name
+        ):
+            raise ConfigError(
+                f"issue #{issue_number} latest run is {job.status}, not an active A-Dev PR"
+            )
+        return job
+    raise ConfigError(f"issue #{issue_number} does not have local A-Dev PR state")
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return False
+
+
+def _ensure_clean_if_on_branch(path: Path, branch: str) -> None:
+    if not path.exists():
+        return
+    if current_branch(path) == branch:
+        ensure_worktree_clean(path)
+
+
+def _prepare_branch_for_merge(job, repo_root: Path) -> None:
+    branch = job.branch_name
+    _ensure_clean_if_on_branch(repo_root, branch)
+    worktree = Path(job.worktree_path)
+    if worktree.exists() and not _same_path(worktree, repo_root):
+        _ensure_clean_if_on_branch(worktree, branch)
+    ensure_branch_pushed(branch)
+
+
+def _cleanup_merged_branch(job, base_branch: str, repo_root: Path) -> None:
+    branch = job.branch_name
+    worktree = Path(job.worktree_path)
+    if current_branch(repo_root) == branch:
+        switch_branch(base_branch, repo_root)
+    if worktree.exists() and not _same_path(worktree, repo_root):
+        remove_worktree(worktree)
+    delete_remote_branch(branch)
+    if local_branch_exists(branch):
+        delete_local_branch(branch, force=True)
+
+
+def _write_merge_record(paths: dict[str, Path], job, status: str, error: str | None):
+    record = replace(
+        job,
+        status=status,
+        finished_at=utc_iso(),
+        error_summary=error,
+    )
+    write_job_record(issue_run_dir(paths["run_root"], job.issue_number), record)
+
+
+def cmd_merge(args) -> int:
+    try:
+        if args.auto and args.admin:
+            raise ConfigError("merge cannot use both --auto and --admin")
+        config = _load(args.config)
+        paths = _paths(config, Path.cwd())
+        job = _latest_open_pr_job(paths["run_root"], args.issue)
+        _prepare_branch_for_merge(job, Path.cwd())
+        if args.dry_run:
+            action = "enable auto-merge for" if args.auto else "merge"
+            suffix = " --admin" if args.admin else ""
+            if args.ready:
+                print(f"would mark {job.pr_url} ready for review")
+            print(f"would {action} {job.pr_url} with --{args.method}{suffix}")
+            if args.auto:
+                print(f"would keep branch {job.branch_name} until GitHub merges it")
+            elif not args.keep_branch:
+                print(f"would delete branch {job.branch_name}")
+            return 0
+        gh = GHClient(config.repo)
+        if args.ready:
+            gh.ready_pr(job.pr_url or "")
+        gh.merge_pr(
+            job.pr_url or "",
+            method=args.method,
+            auto=args.auto,
+            admin=args.admin,
+        )
+        if args.auto:
+            _write_merge_record(paths, job, "pr_auto_merge_enabled", None)
+            print(f"enabled auto-merge for issue #{args.issue}: {job.pr_url}")
+            print(f"kept branch {job.branch_name}")
+            return 0
+        if not args.keep_branch:
+            try:
+                _cleanup_merged_branch(
+                    job, job.base_branch or config.base_branch, Path.cwd()
+                )
+            except GitError as exc:
+                _write_merge_record(paths, job, "pr_merged_cleanup_failed", str(exc))
+                print(f"merged PR but branch cleanup failed: {exc}", file=sys.stderr)
+                return 1
+        try:
+            gh.remove_label(args.issue, config.issue_selection.pr_opened_label)
+        except GHError:
+            pass
+        try:
+            gh.remove_label(args.issue, config.issue_selection.resume_label)
+        except GHError:
+            pass
+        _write_merge_record(paths, job, "pr_merged", None)
+    except (ConfigError, GHError, GitError) as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    print(f"merged PR for issue #{args.issue}: {job.pr_url}")
+    if args.keep_branch:
+        print(f"kept branch {job.branch_name}")
+    else:
+        print(f"deleted branch {job.branch_name}")
+    return 0
+
+
 def cmd_clean(args) -> int:
     try:
         config = _load(args.config)
@@ -1190,6 +1328,17 @@ def build_parser() -> argparse.ArgumentParser:
     resume.add_argument("--model")
     resume.add_argument("--reasoning", choices=REASONING_EFFORTS)
     resume.set_defaults(func=cmd_resume)
+
+    merge = sub.add_parser("merge")
+    merge.add_argument("issue", type=int)
+    merge.add_argument("--config", default=DEFAULT_CONFIG_PATH)
+    merge.add_argument("--method", choices=MERGE_METHODS, default="merge")
+    merge.add_argument("--auto", action="store_true")
+    merge.add_argument("--admin", action="store_true")
+    merge.add_argument("--ready", action="store_true")
+    merge.add_argument("--keep-branch", action="store_true")
+    merge.add_argument("--dry-run", action="store_true")
+    merge.set_defaults(func=cmd_merge)
 
     clean = sub.add_parser("clean")
     clean.add_argument("--config", default=DEFAULT_CONFIG_PATH)

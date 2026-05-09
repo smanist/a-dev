@@ -14,13 +14,21 @@ class GitError(RuntimeError):
 
 
 def slugify_title(title: str, max_len: int = 50) -> str:
-    normalized = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode("ascii")
+    normalized = (
+        unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode("ascii")
+    )
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", normalized.lower()).strip("-")
     slug = re.sub(r"-+", "-", slug)
-    return (slug[:max_len].rstrip("-") or "issue")
+    return slug[:max_len].rstrip("-") or "issue"
 
 
-def branch_name(prefix: str, issue_number: int, title: str, max_length: int = 80, timestamp: str | None = None) -> str:
+def branch_name(
+    prefix: str,
+    issue_number: int,
+    title: str,
+    max_length: int = 80,
+    timestamp: str | None = None,
+) -> str:
     suffix = f"{issue_number}-{slugify_title(title, max_length)}"
     branch = f"{prefix}{suffix}"
     if len(branch) > max_length:
@@ -47,7 +55,11 @@ def _is_allowed_dirty(path: str, allowed_prefixes: list[str]) -> bool:
     return False
 
 
-def ensure_git_ok(base_branch: str, allow_dirty: bool = False, allowed_dirty_prefixes: list[str] | None = None) -> None:
+def ensure_git_ok(
+    base_branch: str,
+    allow_dirty: bool = False,
+    allowed_dirty_prefixes: list[str] | None = None,
+) -> None:
     top = run_cmd(["git", "rev-parse", "--show-toplevel"])
     if top.exit_code != 0:
         raise GitError(top.stderr.strip() or "not inside a git repository")
@@ -58,7 +70,11 @@ def ensure_git_ok(base_branch: str, allow_dirty: bool = False, allowed_dirty_pre
     if status.exit_code != 0:
         raise GitError(status.stderr.strip() or "git status failed")
     allowed = allowed_dirty_prefixes or []
-    dirty = [line for line in status.stdout.splitlines() if not _is_allowed_dirty(_status_path(line), allowed)]
+    dirty = [
+        line
+        for line in status.stdout.splitlines()
+        if not _is_allowed_dirty(_status_path(line), allowed)
+    ]
     if dirty and not allow_dirty:
         details = "\n".join(dirty[:20])
         raise GitError(f"base checkout has uncommitted changes:\n{details}")
@@ -74,7 +90,58 @@ def branch_exists(name: str) -> bool:
 
 
 def local_branch_exists(name: str) -> bool:
-    return run_cmd(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{name}"]).exit_code == 0
+    return (
+        run_cmd(
+            ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{name}"]
+        ).exit_code
+        == 0
+    )
+
+
+def current_branch(cwd: Path | None = None) -> str | None:
+    result = run_cmd(["git", "branch", "--show-current"], cwd=cwd)
+    if result.exit_code != 0:
+        raise GitError(result.stderr.strip() or "git branch check failed")
+    branch = result.stdout.strip()
+    return branch or None
+
+
+def ensure_worktree_clean(path: Path) -> None:
+    result = run_cmd(["git", "status", "--porcelain"], cwd=path)
+    if result.exit_code != 0:
+        raise GitError(result.stderr.strip() or "git status failed")
+    dirty = result.stdout.strip()
+    if dirty:
+        details = "\n".join(dirty.splitlines()[:20])
+        raise GitError(f"worktree has uncommitted changes:\n{details}")
+
+
+def local_branch_head(name: str) -> str | None:
+    result = run_cmd(["git", "rev-parse", "--verify", "--quiet", name])
+    if result.exit_code != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def remote_branch_head(name: str) -> str | None:
+    result = run_cmd(["git", "ls-remote", "--exit-code", "--heads", "origin", name])
+    if result.exit_code != 0:
+        return None
+    line = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
+    return line.split()[0] if line else None
+
+
+def ensure_branch_pushed(name: str) -> None:
+    local = local_branch_head(name)
+    if local is None:
+        return
+    remote = remote_branch_head(name)
+    if remote is None:
+        raise GitError(f"local branch {name} has no matching origin branch")
+    if local != remote:
+        raise GitError(
+            f"local branch {name} does not match origin/{name}; push commits before merging"
+        )
 
 
 def unique_branch_name(config: GitConfig, issue_number: int, title: str) -> str:
@@ -90,7 +157,9 @@ def add_worktree(path: Path, branch: str, base_branch: str) -> None:
     fetch = run_cmd(["git", "fetch", "origin", base_branch])
     if fetch.exit_code != 0:
         raise GitError(fetch.stderr.strip() or "git fetch failed")
-    result = run_cmd(["git", "worktree", "add", "-b", branch, str(path), f"origin/{base_branch}"])
+    result = run_cmd(
+        ["git", "worktree", "add", "-b", branch, str(path), f"origin/{base_branch}"]
+    )
     if result.exit_code != 0:
         raise GitError(result.stderr.strip() or "git worktree add failed")
 
@@ -102,7 +171,9 @@ def ensure_worktree(path: Path, branch: str) -> None:
             raise GitError(result.stderr.strip() or "git branch check failed")
         current = result.stdout.strip()
         if current != branch:
-            raise GitError(f"existing worktree at {path} is on branch {current}, expected {branch}")
+            raise GitError(
+                f"existing worktree at {path} is on branch {current}, expected {branch}"
+            )
         return
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -115,7 +186,9 @@ def ensure_worktree(path: Path, branch: str) -> None:
     fetch = run_cmd(["git", "fetch", "origin", branch])
     if fetch.exit_code != 0:
         raise GitError(fetch.stderr.strip() or "git fetch failed")
-    result = run_cmd(["git", "worktree", "add", "-B", branch, str(path), f"origin/{branch}"])
+    result = run_cmd(
+        ["git", "worktree", "add", "-B", branch, str(path), f"origin/{branch}"]
+    )
     if result.exit_code != 0:
         raise GitError(result.stderr.strip() or "git worktree add failed")
 
@@ -125,6 +198,33 @@ def remove_worktree(path: Path) -> None:
     if result.exit_code != 0:
         raise GitError(result.stderr.strip() or "git worktree remove failed")
     run_cmd(["git", "worktree", "prune"])
+
+
+def switch_branch(branch: str, cwd: Path | None = None) -> None:
+    result = run_cmd(["git", "switch", branch], cwd=cwd)
+    if result.exit_code == 0:
+        return
+    fetch = run_cmd(["git", "fetch", "origin", branch], cwd=cwd)
+    if fetch.exit_code != 0:
+        raise GitError(
+            fetch.stderr.strip() or result.stderr.strip() or "git fetch failed"
+        )
+    result = run_cmd(["git", "switch", "-C", branch, f"origin/{branch}"], cwd=cwd)
+    if result.exit_code != 0:
+        raise GitError(result.stderr.strip() or "git switch failed")
+
+
+def delete_local_branch(branch: str, force: bool = False) -> None:
+    flag = "-D" if force else "-d"
+    result = run_cmd(["git", "branch", flag, branch])
+    if result.exit_code != 0:
+        raise GitError(result.stderr.strip() or "git branch delete failed")
+
+
+def delete_remote_branch(branch: str) -> None:
+    result = run_cmd(["git", "push", "origin", "--delete", branch])
+    if result.exit_code != 0:
+        raise GitError(result.stderr.strip() or "git remote branch delete failed")
 
 
 def changed_files(worktree_path: Path) -> list[str]:

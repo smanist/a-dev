@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Any
 
 from ai_issue_worker import cli
 from ai_issue_worker.config import load_config
@@ -235,6 +236,249 @@ def test_resume_queue_adds_resume_label_and_comment(
     assert captured["comment"] == "Please address the latest review.\n"
     assert captured["added"] == [(123, "ai-resume")]
     assert "issue #123 queued for resume" in capsys.readouterr().out
+
+
+def test_merge_uses_recorded_pr_and_deletes_branch(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".a-dev.yaml").write_text("repo: owner/repo\n", encoding="utf-8")
+    run_dir = tmp_path / ".a-dev" / "runs" / "issue-123"
+    run_dir.mkdir(parents=True)
+    (run_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "issue_number": 123,
+                "issue_title": "Fix bug",
+                "branch_name": "ai/issue-123-fix-bug",
+                "worktree_path": str(tmp_path / ".a-dev" / "worktrees" / "issue-123"),
+                "status": "pr_opened",
+                "started_at": "2026-04-23T00:00:00Z",
+                "base_branch": "main",
+                "stack_depth": 0,
+                "blocker_issue_numbers": [],
+                "finished_at": "2026-04-23T00:05:00Z",
+                "pr_url": "https://github.com/owner/repo/pull/5",
+                "error_summary": None,
+                "changed_files": ["src/app.py"],
+                "verifier_passed": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured = {}
+
+    class FakeMergeGH:
+        def __init__(self, repo: str):
+            captured["repo"] = repo
+
+        def merge_pr(
+            self,
+            pr_url: str,
+            method: str = "merge",
+            *,
+            auto: bool = False,
+            admin: bool = False,
+        ):
+            captured["pr_url"] = pr_url
+            captured["method"] = method
+            captured["auto"] = auto
+            captured["admin"] = admin
+
+        def remove_label(self, number: int, label: str):
+            captured.setdefault("removed", []).append((number, label))
+
+    monkeypatch.setattr(cli, "GHClient", FakeMergeGH)
+    monkeypatch.setattr(cli, "_prepare_branch_for_merge", lambda job, repo_root: None)
+    monkeypatch.setattr(
+        cli,
+        "_cleanup_merged_branch",
+        lambda job, base_branch, repo_root: captured.setdefault(
+            "cleanup", (job.branch_name, base_branch)
+        ),
+    )
+
+    assert cli.main(["merge", "123", "--method", "squash"]) == 0
+
+    latest = json.loads((run_dir / "latest.json").read_text(encoding="utf-8"))
+    assert captured["repo"] == "owner/repo"
+    assert captured["pr_url"] == "https://github.com/owner/repo/pull/5"
+    assert captured["method"] == "squash"
+    assert captured["auto"] is False
+    assert captured["admin"] is False
+    assert captured["cleanup"] == ("ai/issue-123-fix-bug", "main")
+    assert captured["removed"] == [(123, "ai-pr-opened"), (123, "ai-resume")]
+    assert latest["status"] == "pr_merged"
+    assert "merged PR for issue #123" in capsys.readouterr().out
+
+
+def test_merge_auto_enables_auto_merge_without_deleting_branch(
+    tmp_path: Path, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".a-dev.yaml").write_text("repo: owner/repo\n", encoding="utf-8")
+    run_dir = tmp_path / ".a-dev" / "runs" / "issue-123"
+    run_dir.mkdir(parents=True)
+    (run_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "issue_number": 123,
+                "issue_title": "Fix bug",
+                "branch_name": "ai/issue-123-fix-bug",
+                "worktree_path": str(tmp_path / ".a-dev" / "worktrees" / "issue-123"),
+                "status": "pr_opened",
+                "started_at": "2026-04-23T00:00:00Z",
+                "base_branch": "main",
+                "stack_depth": 0,
+                "blocker_issue_numbers": [],
+                "finished_at": "2026-04-23T00:05:00Z",
+                "pr_url": "https://github.com/owner/repo/pull/5",
+                "error_summary": None,
+                "changed_files": ["src/app.py"],
+                "verifier_passed": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured = {}
+
+    class FakeAutoMergeGH:
+        def __init__(self, repo: str):
+            captured["repo"] = repo
+
+        def merge_pr(
+            self,
+            pr_url: str,
+            method: str = "merge",
+            *,
+            auto: bool = False,
+            admin: bool = False,
+        ):
+            captured["pr_url"] = pr_url
+            captured["method"] = method
+            captured["auto"] = auto
+            captured["admin"] = admin
+
+        def remove_label(self, number: int, label: str):
+            captured.setdefault("removed", []).append((number, label))
+
+    monkeypatch.setattr(cli, "GHClient", FakeAutoMergeGH)
+    monkeypatch.setattr(cli, "_prepare_branch_for_merge", lambda job, repo_root: None)
+    monkeypatch.setattr(
+        cli,
+        "_cleanup_merged_branch",
+        lambda job, base_branch, repo_root: captured.setdefault("cleanup", True),
+    )
+
+    assert cli.main(["merge", "123", "--auto"]) == 0
+
+    latest = json.loads((run_dir / "latest.json").read_text(encoding="utf-8"))
+    assert captured["pr_url"] == "https://github.com/owner/repo/pull/5"
+    assert captured["method"] == "merge"
+    assert captured["auto"] is True
+    assert captured["admin"] is False
+    assert "cleanup" not in captured
+    assert "removed" not in captured
+    assert latest["status"] == "pr_auto_merge_enabled"
+    output = capsys.readouterr().out
+    assert "enabled auto-merge for issue #123" in output
+    assert "kept branch ai/issue-123-fix-bug" in output
+
+
+def test_merge_ready_marks_pr_ready_before_merging(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".a-dev.yaml").write_text("repo: owner/repo\n", encoding="utf-8")
+    run_dir = tmp_path / ".a-dev" / "runs" / "issue-123"
+    run_dir.mkdir(parents=True)
+    (run_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "issue_number": 123,
+                "issue_title": "Fix bug",
+                "branch_name": "ai/issue-123-fix-bug",
+                "worktree_path": str(tmp_path / ".a-dev" / "worktrees" / "issue-123"),
+                "status": "pr_opened",
+                "started_at": "2026-04-23T00:00:00Z",
+                "base_branch": "main",
+                "stack_depth": 0,
+                "blocker_issue_numbers": [],
+                "finished_at": "2026-04-23T00:05:00Z",
+                "pr_url": "https://github.com/owner/repo/pull/5",
+                "error_summary": None,
+                "changed_files": ["src/app.py"],
+                "verifier_passed": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured: dict[str, Any] = {"calls": []}
+
+    class FakeReadyMergeGH:
+        def __init__(self, repo: str):
+            captured["repo"] = repo
+
+        def ready_pr(self, pr_url: str):
+            captured["calls"].append(("ready", pr_url))
+
+        def merge_pr(
+            self,
+            pr_url: str,
+            method: str = "merge",
+            *,
+            auto: bool = False,
+            admin: bool = False,
+        ):
+            captured["calls"].append(("merge", pr_url, method, auto, admin))
+
+        def remove_label(self, number: int, label: str):
+            captured.setdefault("removed", []).append((number, label))
+
+    monkeypatch.setattr(cli, "GHClient", FakeReadyMergeGH)
+    monkeypatch.setattr(cli, "_prepare_branch_for_merge", lambda job, repo_root: None)
+    monkeypatch.setattr(
+        cli,
+        "_cleanup_merged_branch",
+        lambda job, base_branch, repo_root: captured.setdefault(
+            "cleanup", (job.branch_name, base_branch)
+        ),
+    )
+
+    assert cli.main(["merge", "123", "--ready", "--admin"]) == 0
+
+    assert captured["calls"] == [
+        ("ready", "https://github.com/owner/repo/pull/5"),
+        ("merge", "https://github.com/owner/repo/pull/5", "merge", False, True),
+    ]
+    assert "merged PR for issue #123" in capsys.readouterr().out
+
+
+def test_merge_rejects_latest_non_pr_status(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".a-dev.yaml").write_text("repo: owner/repo\n", encoding="utf-8")
+    run_dir = tmp_path / ".a-dev" / "runs" / "issue-123"
+    run_dir.mkdir(parents=True)
+    (run_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "issue_number": 123,
+                "issue_title": "Fix bug",
+                "branch_name": "ai/issue-123-fix-bug",
+                "worktree_path": str(tmp_path / ".a-dev" / "worktrees" / "issue-123"),
+                "status": "verify_failed",
+                "started_at": "2026-04-23T00:00:00Z",
+                "base_branch": "main",
+                "stack_depth": 0,
+                "blocker_issue_numbers": [],
+                "finished_at": "2026-04-23T00:05:00Z",
+                "pr_url": "https://github.com/owner/repo/pull/5",
+                "error_summary": "pytest failed",
+                "changed_files": ["src/app.py"],
+                "verifier_passed": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert cli.main(["merge", "123"]) == 1
+    assert "not an active A-Dev PR" in capsys.readouterr().err
 
 
 def test_cli_create_issue_uses_ready_label_and_generated_body(

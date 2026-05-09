@@ -72,6 +72,23 @@ Queue an existing A-Dev PR for the normal scheduler to pick up later:
 a-dev resume <issue-number> --queue --comment "Address the latest review feedback."
 ```
 
+Merge an A-Dev PR after local review, manual commits, and push:
+
+```bash
+a-dev merge <issue-number> --method merge
+```
+
+`merge` uses the latest local `pr_opened` run record for that issue. It refuses
+to proceed if the matching local branch exists but is dirty or differs from
+`origin/<branch>`, then merges the PR on GitHub, removes A-Dev PR/resume labels,
+records `pr_merged`, and deletes the local and remote branch unless
+`--keep-branch` is set. Use `--method squash` or `--method rebase` for alternate
+GitHub merge modes, `--auto` when branch protection should merge the PR after
+requirements pass, `--admin` for an administrator bypass, `--ready` to mark a
+draft PR ready before merging, and `--dry-run` to preview the target PR and
+branch. Auto-merge records `pr_auto_merge_enabled` and keeps the branch because
+the PR has not merged yet.
+
 Clean old run directories and worktrees:
 
 ```bash
@@ -134,6 +151,7 @@ For daemon state:
 - Stacked PRs are only considered when dependency checking is enabled, there is exactly one open blocker, and that blocker already has a recorded `pr_opened` job.
 - Parent issues carry `ai-parent` and orchestrate `ai-child` sub-issues. Children remain the code-producing PR units.
 - Parent runs process children serially up to `issue_selection.max_parent_children_per_run` and leave the parent `ai-ready` if blocked or only partially drained.
+- `merge` is an explicit operator action, not part of the daemon loop. It assumes CI/verifier confidence was established locally before the command is run.
 - `clean --delete-local-branches` deletes local branches with `git branch -D`; use it deliberately.
 - `keep_worktree_on_failure` and `keep_worktree_on_success` change how much state remains available for inspection after runs.
 - `resume` without `--queue` bypasses normal `ai-ready` selection. It reuses the recorded branch/worktree for an existing PR, pulls in the latest local resume summary plus new issue comments and PR comments/reviews since the last run, and updates the existing PR body after verification.

@@ -63,6 +63,7 @@ This is the repo's center of gravity.
 - Finalizes GitHub labels/comments and git cleanup.
 - Supports explicit continuation of an existing A-Dev PR by reusing the recorded branch/worktree and updating the existing PR instead of opening a new one.
 - Supports queued continuation work through the `ai-resume` label so the daemon and `run-once` path can process PR revisions alongside new issues.
+- Supports explicit operator-driven PR merge/finalization from local `pr_opened` state while keeping the daemon loop non-merging.
 
 When making behavioral changes, start here and verify the corresponding tests in `tests/test_runner_review.py`.
 
@@ -135,7 +136,7 @@ If the review output reports configured blocking priorities, the worker runs a s
 
 ## Safety Boundaries
 
-- No auto-merge.
+- No unattended auto-merge from the worker loop; merging requires `a-dev merge`.
 - No automatic commit/push from inner prompts.
 - Diff policy rejects oversized or risky changes after the agent/review loops finish.
 - GitHub outbound text is sanitized.

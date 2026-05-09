@@ -22,7 +22,7 @@ The repo is intentionally small. Most behavior lives in `src/ai_issue_worker/run
 ## High-Signal Files
 
 - `src/ai_issue_worker/runner.py`: orchestration for one issue run, including verification, review, diff checks, commit/push, and PR creation.
-- `src/ai_issue_worker/cli.py`: user-facing commands such as `init`, `list`, `create`, `run-once`, `start`, `inspect`, `kanban`, `retry`, `resume`, and `clean`.
+- `src/ai_issue_worker/cli.py`: user-facing commands such as `init`, `list`, `create`, `run-once`, `start`, `inspect`, `kanban`, `retry`, `resume`, `merge`, and `clean`.
 - `src/ai_issue_worker/config.py`: config schema, defaults, and validation.
 - `src/ai_issue_worker/prompt.py`: prompts sent to Codex. This is where repo instructions are assembled.
 - `src/ai_issue_worker/worktree.py`: git safety checks, branch naming, worktree creation/removal, commit, and push.
@@ -50,6 +50,7 @@ The repo is intentionally small. Most behavior lives in `src/ai_issue_worker/run
 - The outer worker commits and pushes. Prompts explicitly instruct the inner Codex session not to do that.
 - Resume runs for existing PRs must update the existing PR and recorded branch/worktree instead of silently opening a second PR.
 - Queued resume runs are selected via the `ai-resume` label and should stay distinct from fresh `ai-ready` issue work.
+- PR merging is explicit operator finalization through `a-dev merge`, not part of the unattended worker loop.
 - Parent issues are orchestration-only; child issues are the code-producing PR units.
 - Parent runs process children serially and must respect the existing stacked PR settings for open blockers.
 - GitHub comments, issue bodies, and PR bodies must be sanitized before leaving the machine.

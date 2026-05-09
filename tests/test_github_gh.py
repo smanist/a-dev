@@ -354,3 +354,83 @@ def test_update_pr_sanitizes_body_file_before_edit(monkeypatch, tmp_path: Path):
     ]
     assert "/Users/alice" not in captured["body"]
     assert "####/Repos/project/src/app.py" in captured["body"]
+
+
+def test_merge_pr_uses_explicit_method(monkeypatch):
+    captured = {}
+
+    def fake_run_cmd(args):
+        captured["args"] = args
+        return Result("")
+
+    monkeypatch.setattr("ai_issue_worker.github_gh.run_cmd", fake_run_cmd)
+
+    GHClient("owner/repo").merge_pr("https://github.com/owner/repo/pull/2", "squash")
+
+    assert captured["args"] == [
+        "gh",
+        "pr",
+        "merge",
+        "https://github.com/owner/repo/pull/2",
+        "--repo",
+        "owner/repo",
+        "--squash",
+    ]
+
+
+def test_ready_pr_marks_pr_ready_for_review(monkeypatch):
+    captured = {}
+
+    def fake_run_cmd(args):
+        captured["args"] = args
+        return Result("")
+
+    monkeypatch.setattr("ai_issue_worker.github_gh.run_cmd", fake_run_cmd)
+
+    GHClient("owner/repo").ready_pr("https://github.com/owner/repo/pull/2")
+
+    assert captured["args"] == [
+        "gh",
+        "pr",
+        "ready",
+        "https://github.com/owner/repo/pull/2",
+        "--repo",
+        "owner/repo",
+    ]
+
+
+def test_merge_pr_supports_auto_and_admin_flags(monkeypatch):
+    captured = []
+
+    def fake_run_cmd(args):
+        captured.append(args)
+        return Result("")
+
+    monkeypatch.setattr("ai_issue_worker.github_gh.run_cmd", fake_run_cmd)
+
+    gh = GHClient("owner/repo")
+    gh.merge_pr("https://github.com/owner/repo/pull/2", "merge", auto=True)
+    gh.merge_pr("https://github.com/owner/repo/pull/3", "rebase", admin=True)
+
+    assert captured == [
+        [
+            "gh",
+            "pr",
+            "merge",
+            "https://github.com/owner/repo/pull/2",
+            "--repo",
+            "owner/repo",
+            "--merge",
+            "--auto",
+        ],
+        [
+            "gh",
+            "pr",
+            "merge",
+            "https://github.com/owner/repo/pull/3",
+            "--repo",
+            "owner/repo",
+            "--rebase",
+            "--admin",
+        ],
+    ]

@@ -389,3 +389,50 @@ class GHClient:
         with self._sanitized_body_file(body_file) as sanitized:
             args[body_index + 1] = str(sanitized)
             self._run(args)
+
+    def ready_pr(self, pr_url: str) -> None:
+        self._run(
+            [
+                "gh",
+                "pr",
+                "ready",
+                pr_url,
+                "--repo",
+                self.repo,
+            ]
+        )
+
+    def merge_pr(
+        self,
+        pr_url: str,
+        method: str = "merge",
+        *,
+        auto: bool = False,
+        admin: bool = False,
+    ) -> None:
+        method_flags = {
+            "merge": "--merge",
+            "squash": "--squash",
+            "rebase": "--rebase",
+        }
+        if auto and admin:
+            raise GHError("merge cannot use both --auto and --admin")
+        try:
+            method_flag = method_flags[method]
+        except KeyError as exc:
+            allowed = ", ".join(sorted(method_flags))
+            raise GHError(f"merge method must be one of: {allowed}") from exc
+        args = [
+            "gh",
+            "pr",
+            "merge",
+            pr_url,
+            "--repo",
+            self.repo,
+            method_flag,
+        ]
+        if auto:
+            args.append("--auto")
+        if admin:
+            args.append("--admin")
+        self._run(args)
