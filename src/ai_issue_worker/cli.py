@@ -46,6 +46,7 @@ from .worktree import (
     ensure_branch_pushed,
     ensure_worktree_clean,
     local_branch_exists,
+    pull_branch,
     remove_worktree,
     switch_branch,
 )
@@ -1117,6 +1118,14 @@ def _cleanup_merged_branch(job, base_branch: str, repo_root: Path) -> None:
         delete_local_branch(branch, force=True)
 
 
+def _pull_base_after_merge(base_branch: str, repo_root: Path) -> bool:
+    if current_branch(repo_root) != base_branch:
+        return False
+    ensure_worktree_clean(repo_root)
+    pull_branch(base_branch, repo_root)
+    return True
+
+
 def _write_merge_record(paths: dict[str, Path], job, status: str, error: str | None):
     record = replace(
         job,
@@ -1155,6 +1164,7 @@ def cmd_merge(args) -> int:
             auto=args.auto,
             admin=args.admin,
         )
+        pulled_base = False
         if args.auto:
             _write_merge_record(paths, job, "pr_auto_merge_enabled", None)
             print(f"enabled auto-merge for issue #{args.issue}: {job.pr_url}")
@@ -1169,6 +1179,14 @@ def cmd_merge(args) -> int:
                 _write_merge_record(paths, job, "pr_merged_cleanup_failed", str(exc))
                 print(f"merged PR but branch cleanup failed: {exc}", file=sys.stderr)
                 return 1
+        try:
+            pulled_base = _pull_base_after_merge(
+                job.base_branch or config.base_branch, Path.cwd()
+            )
+        except GitError as exc:
+            _write_merge_record(paths, job, "pr_merged_pull_failed", str(exc))
+            print(f"merged PR but base branch pull failed: {exc}", file=sys.stderr)
+            return 1
         try:
             gh.remove_label(args.issue, config.issue_selection.pr_opened_label)
         except GHError:
@@ -1186,6 +1204,8 @@ def cmd_merge(args) -> int:
         print(f"kept branch {job.branch_name}")
     else:
         print(f"deleted branch {job.branch_name}")
+    if pulled_base:
+        print(f"pulled {job.base_branch or config.base_branch}")
     return 0
 
 

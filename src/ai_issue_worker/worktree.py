@@ -214,6 +214,12 @@ def switch_branch(branch: str, cwd: Path | None = None) -> None:
         raise GitError(result.stderr.strip() or "git switch failed")
 
 
+def pull_branch(branch: str, cwd: Path | None = None) -> None:
+    result = run_cmd(["git", "pull", "--ff-only", "origin", branch], cwd=cwd)
+    if result.exit_code != 0:
+        raise GitError(result.stderr.strip() or "git pull failed")
+
+
 def delete_local_branch(branch: str, force: bool = False) -> None:
     flag = "-D" if force else "-d"
     result = run_cmd(["git", "branch", flag, branch])

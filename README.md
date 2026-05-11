@@ -175,12 +175,14 @@ a-dev merge 123 --method merge
 `merge` finds the recorded PR for issue `123`, verifies the local branch is clean
 and matches `origin/<branch>` when that branch exists locally, asks GitHub to
 merge the PR, removes A-Dev PR/resume labels, records a `pr_merged` job, and
-deletes the local and remote branch. Use `--method squash` or `--method rebase`
-for those GitHub merge modes, `--auto` to enable GitHub auto-merge when branch
-protection requirements are still pending, `--admin` to use administrator
-privileges, `--ready` to mark a draft PR ready before merging, `--dry-run` to
-preview, or `--keep-branch` to leave the branch in place. Auto-merge records
-`pr_auto_merge_enabled` and keeps the branch because the PR has not merged yet.
+deletes the local and remote branch. After an immediate merge, it fast-forward
+pulls the base branch when the local checkout is on that branch. Use `--method
+squash` or `--method rebase` for those GitHub merge modes, `--auto` to enable
+GitHub auto-merge when branch protection requirements are still pending,
+`--admin` to use administrator privileges, `--ready` to mark a draft PR ready
+before merging, `--dry-run` to preview, or `--keep-branch` to leave the branch in
+place. Auto-merge records `pr_auto_merge_enabled` and keeps the branch because
+the PR has not merged yet.
 
 ## Safety
 

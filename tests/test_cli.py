@@ -295,6 +295,13 @@ def test_merge_uses_recorded_pr_and_deletes_branch(tmp_path: Path, monkeypatch, 
             "cleanup", (job.branch_name, base_branch)
         ),
     )
+    monkeypatch.setattr(
+        cli,
+        "_pull_base_after_merge",
+        lambda base_branch, repo_root: (
+            captured.setdefault("pulled", base_branch) or True
+        ),
+    )
 
     assert cli.main(["merge", "123", "--method", "squash"]) == 0
 
@@ -305,9 +312,12 @@ def test_merge_uses_recorded_pr_and_deletes_branch(tmp_path: Path, monkeypatch, 
     assert captured["auto"] is False
     assert captured["admin"] is False
     assert captured["cleanup"] == ("ai/issue-123-fix-bug", "main")
+    assert captured["pulled"] == "main"
     assert captured["removed"] == [(123, "ai-pr-opened"), (123, "ai-resume")]
     assert latest["status"] == "pr_merged"
-    assert "merged PR for issue #123" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "merged PR for issue #123" in output
+    assert "pulled main" in output
 
 
 def test_merge_auto_enables_auto_merge_without_deleting_branch(
@@ -439,6 +449,9 @@ def test_merge_ready_marks_pr_ready_before_merging(tmp_path: Path, monkeypatch, 
         lambda job, base_branch, repo_root: captured.setdefault(
             "cleanup", (job.branch_name, base_branch)
         ),
+    )
+    monkeypatch.setattr(
+        cli, "_pull_base_after_merge", lambda base_branch, repo_root: True
     )
 
     assert cli.main(["merge", "123", "--ready", "--admin"]) == 0
