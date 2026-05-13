@@ -81,6 +81,29 @@ that draft in your editor, then creates GitHub issue records:
 a-dev create --title "Fix parser crash" "Parser crashes when input is empty."
 ```
 
+Longer notes can carry their own title in a leading `Title:` line:
+
+```markdown
+Title: Fix parser crash
+
+Parser crashes when input is empty.
+```
+
+Then create from the file directly:
+
+```bash
+a-dev create --description-file issue.md
+```
+
+To write temporary notes without saving a scratch file first, use:
+
+```bash
+a-dev create --input-editor
+```
+
+That opens a temporary note with the same leading `Title:` format, then deletes
+the temporary file after reading it.
+
 By default, `--mode auto` lets Codex decide between one issue and a parent issue
 with sub-issues. Use `--mode single` to force one ready issue, or `--mode parent`
 to force an `ai-ready` + `ai-parent` tracking issue with `ai-child` sub-issues
@@ -88,8 +111,9 @@ and native GitHub `blocked_by` dependency edges. Parent plans are edited as JSON
 single issue drafts keep the `Title:` plus Markdown editor format.
 
 It uses the same `agent.command`, `agent.model`, and `agent.reasoning` settings
-as the worker. Use `--description-file path/to/issue.txt` for longer notes, or
-`--no-edit` for non-interactive scripts.
+as the worker. Use `--no-edit` for non-interactive scripts. If no `--editor`,
+`VISUAL`, or `EDITOR` is set, the generated draft opens with `code --wait` when
+VS Code's command-line launcher is available.
 
 When `run-once` selects a parent issue, it processes eligible child issues
 serially in separate Codex sessions and child PRs, up to

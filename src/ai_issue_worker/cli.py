@@ -253,6 +253,21 @@ def _derive_issue_title(description: str, title: str | None) -> str:
     return first[:120].rstrip(" .")
 
 
+def _extract_input_title(description: str) -> tuple[str | None, str]:
+    lines = description.splitlines()
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if not stripped.lower().startswith("title:"):
+            return None, description
+        title = stripped.split(":", 1)[1].strip()
+        if not title:
+            raise ConfigError("input Title: line is empty")
+        return title, "\n".join(lines[index + 1 :])
+    return None, description
+
+
 def _strip_code_fence(text: str) -> str:
     stripped = text.strip()
     if stripped.startswith("```") and stripped.endswith("```"):
@@ -496,6 +511,34 @@ def _read_description(args) -> str:
     return ""
 
 
+def _read_create_description(args) -> str:
+    description = (
+        ""
+        if args.input_editor and not args.description_file and not args.description
+        else _read_description(args)
+    )
+    if not args.input_editor:
+        return description
+
+    draft_dir = Path(tempfile.mkdtemp(prefix="a-dev-create-input-"))
+    draft_file = draft_dir / "issue.md"
+    try:
+        initial = description.strip()
+        if not initial:
+            initial = f"Title: {args.title}\n\n" if args.title else "Title:\n\n"
+        elif args.title and not _first_nonempty_line(initial).lower().startswith(
+            "title:"
+        ):
+            initial = f"Title: {args.title}\n\n{initial}"
+        if not initial.endswith("\n"):
+            initial += "\n"
+        draft_file.write_text(initial, encoding="utf-8")
+        _run_editor(draft_file, args.editor)
+        return draft_file.read_text(encoding="utf-8")
+    finally:
+        shutil.rmtree(draft_dir, ignore_errors=True)
+
+
 def _read_resume_comment(args) -> str:
     if args.comment_file:
         if args.comment_file == "-":
@@ -512,6 +555,9 @@ def _editor_command(editor: str | None = None) -> list[str]:
     for command in [editor, os.environ.get("VISUAL"), os.environ.get("EDITOR")]:
         if command:
             return shlex.split(command)
+    code_path = shutil.which("code")
+    if code_path:
+        return [code_path, "--wait"]
     for name in ["nano", "vi"]:
         path = shutil.which(name)
         if path:
@@ -768,12 +814,13 @@ def cmd_list(args) -> int:
 def cmd_create(args) -> int:
     try:
         config = _load(args.config)
-        description = _read_description(args).strip()
+        input_title, description = _extract_input_title(_read_create_description(args))
+        description = description.strip()
         if not description:
             raise ConfigError(
                 "issue description is required; pass text, --description-file, or pipe stdin"
             )
-        title_hint = _derive_issue_title(description, args.title)
+        title_hint = _derive_issue_title(description, args.title or input_title)
         draft_dir = Path(tempfile.mkdtemp(prefix="a-dev-create-"))
         draft_file = draft_dir / (
             "issue-plan.json" if args.mode == "parent" else "issue.md"
@@ -1323,11 +1370,25 @@ def build_parser() -> argparse.ArgumentParser:
     list_cmd.set_defaults(func=cmd_list)
 
     create = sub.add_parser("create")
-    create.add_argument("description", nargs="*")
+    create.add_argument(
+        "description",
+        nargs="*",
+        help="rough issue notes; a leading Title: line is used as the title hint",
+    )
     create.add_argument("--config", default=DEFAULT_CONFIG_PATH)
-    create.add_argument("--title")
-    create.add_argument("--description-file")
-    create.add_argument("--editor")
+    create.add_argument(
+        "--title", help="issue title hint; overrides a Title: input line"
+    )
+    create.add_argument(
+        "--description-file",
+        help="read rough issue notes from a file, or - for stdin",
+    )
+    create.add_argument("--editor", help="editor command for the generated draft")
+    create.add_argument(
+        "--input-editor",
+        action="store_true",
+        help="open an editor for temporary rough issue notes before draft generation",
+    )
     create.add_argument("--no-edit", action="store_true")
     create.add_argument("--mode", choices=CREATE_MODES, default="auto")
     create.set_defaults(func=cmd_create)

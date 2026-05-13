@@ -35,6 +35,25 @@ Create a new `ai-ready` issue from rough notes:
 a-dev create --title "Fix parser crash" "Parser crashes when input is empty."
 ```
 
+For editor-driven notes, put the title in the first line and create from the
+current file:
+
+```markdown
+Title: Fix parser crash
+
+Parser crashes when input is empty.
+```
+
+```bash
+a-dev create --description-file issue.md
+```
+
+For temporary notes that should not be saved first:
+
+```bash
+a-dev create --input-editor
+```
+
 Force the issue shape when needed:
 
 ```bash
