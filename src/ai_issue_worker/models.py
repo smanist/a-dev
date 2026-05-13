@@ -39,6 +39,40 @@ class Issue:
         )
 
 
+@dataclass
+class PullRequest:
+    number: int
+    title: str
+    state: str
+    url: str | None = None
+    updated_at: str | None = None
+    labels: list[str] = field(default_factory=list)
+    is_draft: bool = False
+    head_ref: str | None = None
+    base_ref: str | None = None
+    author: str | None = None
+
+    @classmethod
+    def from_gh(cls, data: dict[str, Any]) -> "PullRequest":
+        labels = data.get("labels") or []
+        names = [
+            item["name"] if isinstance(item, dict) else str(item) for item in labels
+        ]
+        author = data.get("author") or {}
+        return cls(
+            number=int(data["number"]),
+            title=data.get("title") or "",
+            state=data.get("state") or "",
+            url=data.get("url"),
+            updated_at=data.get("updatedAt") or data.get("updated_at"),
+            labels=names,
+            is_draft=bool(data.get("isDraft")),
+            head_ref=data.get("headRefName"),
+            base_ref=data.get("baseRefName"),
+            author=author.get("login") if isinstance(author, dict) else None,
+        )
+
+
 @dataclass(frozen=True)
 class CreatedIssue:
     number: int

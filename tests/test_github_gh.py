@@ -145,6 +145,53 @@ def test_sub_issues_uses_gh_api_and_flattens_paginated_results(monkeypatch):
     assert children[0].id == 8
 
 
+def test_list_prs_uses_gh_pr_list(monkeypatch):
+    captured = {}
+
+    def fake_run_cmd(args):
+        captured["args"] = args
+        return Result(
+            json.dumps(
+                [
+                    {
+                        "number": 5,
+                        "title": "Worker PR",
+                        "labels": [{"name": "ai-pr-opened"}],
+                        "state": "OPEN",
+                        "url": "https://github.com/owner/repo/pull/5",
+                        "updatedAt": "2026-01-02T00:00:00Z",
+                        "isDraft": True,
+                        "headRefName": "ai/issue-5",
+                        "baseRefName": "main",
+                        "author": {"login": "alice"},
+                    }
+                ]
+            )
+        )
+
+    monkeypatch.setattr("ai_issue_worker.github_gh.run_cmd", fake_run_cmd)
+
+    prs = GHClient("owner/repo").list_prs()
+
+    assert captured["args"] == [
+        "gh",
+        "pr",
+        "list",
+        "--repo",
+        "owner/repo",
+        "--state",
+        "all",
+        "--limit",
+        "1000",
+        "--json",
+        "number,title,labels,state,url,updatedAt,isDraft,headRefName,baseRefName,author",
+    ]
+    assert prs[0].number == 5
+    assert prs[0].labels == ["ai-pr-opened"]
+    assert prs[0].is_draft is True
+    assert prs[0].head_ref == "ai/issue-5"
+
+
 def test_add_sub_issue_and_dependency_use_rest_ids(monkeypatch):
     captured = []
 

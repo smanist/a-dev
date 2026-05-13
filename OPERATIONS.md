@@ -14,6 +14,15 @@ Inspect candidate issues:
 a-dev list
 ```
 
+Inspect open issues, all issues, open pull requests, or all pull requests:
+
+```bash
+a-dev list --open-issues
+a-dev list --all-issues
+a-dev list --open-prs
+a-dev list --prs
+```
+
 Run one local execution cycle:
 
 ```bash

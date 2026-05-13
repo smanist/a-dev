@@ -721,27 +721,44 @@ def cmd_list(args) -> int:
     try:
         config = _load(args.config)
         gh = GHClient(config.repo)
-        issues = gh.list_issues(
-            [config.issue_selection.ready_label, config.issue_selection.resume_label]
-        )
-        candidates = workable_issues(
-            gh,
-            issues,
-            config.issue_selection,
-            config.base_branch,
-            _paths(config, Path.cwd()),
-        )
+        if args.open_prs or args.prs:
+            prs = gh.list_prs(state="open" if args.open_prs else "all")
+            if args.json:
+                print(json.dumps([asdict(pr) for pr in prs], indent=2, sort_keys=True))
+                return 0
+            for pr in prs:
+                labels = ",".join(pr.labels)
+                draft = "draft" if pr.is_draft else "ready"
+                refs = f"{pr.base_ref or ''}<-{pr.head_ref or ''}"
+                print(
+                    f"#{pr.number}\t{pr.state}\t{draft}\t{pr.updated_at or ''}\t{refs}\t{labels}\t{pr.title}"
+                )
+            return 0
+        elif args.open_issues:
+            issues = gh.list_issues(state="open")
+        elif args.all_issues:
+            issues = gh.list_issues(state="all")
+        else:
+            ready_issues = gh.list_issues(
+                [
+                    config.issue_selection.ready_label,
+                    config.issue_selection.resume_label,
+                ]
+            )
+            issues = workable_issues(
+                gh,
+                ready_issues,
+                config.issue_selection,
+                config.base_branch,
+                _paths(config, Path.cwd()),
+            )
     except (ConfigError, GHError) as exc:
         print(exc, file=sys.stderr)
         return 1
     if args.json:
-        print(
-            json.dumps(
-                [issue.__dict__ for issue in candidates], indent=2, sort_keys=True
-            )
-        )
+        print(json.dumps([asdict(issue) for issue in issues], indent=2, sort_keys=True))
         return 0
-    for issue in candidates:
+    for issue in issues:
         print(
             f"#{issue.number}\t{issue.state}\t{issue.updated_at or ''}\t{','.join(issue.labels)}\t{issue.title}"
         )
@@ -1282,6 +1299,27 @@ def build_parser() -> argparse.ArgumentParser:
     list_cmd = sub.add_parser("list")
     list_cmd.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     list_cmd.add_argument("--json", action="store_true")
+    list_scope = list_cmd.add_mutually_exclusive_group()
+    list_scope.add_argument(
+        "--open-issues",
+        action="store_true",
+        help="show all open issues instead of only A-Dev candidate issues",
+    )
+    list_scope.add_argument(
+        "--all-issues",
+        action="store_true",
+        help="show all issues instead of only A-Dev candidate issues",
+    )
+    list_scope.add_argument(
+        "--prs",
+        action="store_true",
+        help="show pull requests instead of issues",
+    )
+    list_scope.add_argument(
+        "--open-prs",
+        action="store_true",
+        help="show open pull requests instead of issues",
+    )
     list_cmd.set_defaults(func=cmd_list)
 
     create = sub.add_parser("create")

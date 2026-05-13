@@ -7,7 +7,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from urllib.parse import urlparse
 
-from .models import CreatedIssue, DiscussionComment, Issue
+from .models import CreatedIssue, DiscussionComment, Issue, PullRequest
 from .privacy import sanitize_user_paths
 from .shell import run_cmd
 
@@ -97,29 +97,50 @@ class GHClient:
         self._run(["gh", "auth", "status"])
         self._run(["gh", "repo", "view", self.repo])
 
-    def list_issues(self, labels: str | list[str]) -> list[Issue]:
+    def list_issues(
+        self, labels: str | list[str] | None = None, state: str = "open"
+    ) -> list[Issue]:
         requested = [labels] if isinstance(labels, str) else labels
+        requested = requested or [None]
         items_by_number: dict[int, Issue] = {}
         for label in requested:
-            result = self._run(
-                [
-                    "gh",
-                    "issue",
-                    "list",
-                    "--repo",
-                    self.repo,
-                    "--state",
-                    "open",
-                    "--label",
-                    label,
-                    "--json",
-                    "number,title,body,labels,state,url,updatedAt",
-                ]
-            )
+            args = [
+                "gh",
+                "issue",
+                "list",
+                "--repo",
+                self.repo,
+                "--state",
+                state,
+                "--limit",
+                "1000",
+            ]
+            if label:
+                args.extend(["--label", label])
+            args.extend(["--json", "number,title,body,labels,state,url,updatedAt"])
+            result = self._run(args)
             for item in json.loads(result.stdout or "[]"):
                 issue = Issue.from_gh(item)
                 items_by_number[issue.number] = issue
         return list(items_by_number.values())
+
+    def list_prs(self, state: str = "all") -> list[PullRequest]:
+        result = self._run(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--repo",
+                self.repo,
+                "--state",
+                state,
+                "--limit",
+                "1000",
+                "--json",
+                "number,title,labels,state,url,updatedAt,isDraft,headRefName,baseRefName,author",
+            ]
+        )
+        return [PullRequest.from_gh(item) for item in json.loads(result.stdout or "[]")]
 
     def view_issue(self, number: int) -> Issue:
         result = self._run(

@@ -4,7 +4,7 @@ from typing import Any
 
 from ai_issue_worker import cli
 from ai_issue_worker.config import load_config
-from ai_issue_worker.models import CommandResult, CreatedIssue, Issue
+from ai_issue_worker.models import CommandResult, CreatedIssue, Issue, PullRequest
 
 
 class FakeGH:
@@ -132,6 +132,135 @@ def test_cli_list_defaults_to_dotfile_config(tmp_path: Path, monkeypatch, capsys
     monkeypatch.setattr(cli, "GHClient", FakeGH)
     assert cli.main(["list"]) == 0
     assert "#1" in capsys.readouterr().out
+
+
+def test_cli_list_all_issues_skips_candidate_filter(
+    tmp_path: Path, monkeypatch, capsys
+):
+    path = tmp_path / "config.yaml"
+    path.write_text("repo: owner/repo\n", encoding="utf-8")
+    captured = {}
+
+    class FakeAllIssuesGH:
+        def __init__(self, repo: str):
+            self.repo = repo
+
+        def list_issues(self, labels=None, state: str = "open"):
+            captured["labels"] = labels
+            captured["state"] = state
+            return [
+                Issue(1, "Ready", "", ["ai-ready"], "open"),
+                Issue(2, "Done", "", [], "closed"),
+            ]
+
+        def blocked_by(self, number: int):
+            raise AssertionError("all issue listing should not check blockers")
+
+    monkeypatch.setattr(cli, "GHClient", FakeAllIssuesGH)
+
+    assert cli.main(["list", "--config", str(path), "--all-issues"]) == 0
+
+    output = capsys.readouterr().out
+    assert captured == {"labels": None, "state": "all"}
+    assert "#1" in output
+    assert "#2" in output
+
+
+def test_cli_list_open_issues_skips_candidate_filter(
+    tmp_path: Path, monkeypatch, capsys
+):
+    path = tmp_path / "config.yaml"
+    path.write_text("repo: owner/repo\n", encoding="utf-8")
+    captured = {}
+
+    class FakeOpenIssuesGH:
+        def __init__(self, repo: str):
+            self.repo = repo
+
+        def list_issues(self, labels=None, state: str = "open"):
+            captured["labels"] = labels
+            captured["state"] = state
+            return [
+                Issue(1, "Ready", "", ["ai-ready"], "open"),
+                Issue(2, "Unlabeled", "", [], "open"),
+            ]
+
+        def blocked_by(self, number: int):
+            raise AssertionError("open issue listing should not check blockers")
+
+    monkeypatch.setattr(cli, "GHClient", FakeOpenIssuesGH)
+
+    assert cli.main(["list", "--config", str(path), "--open-issues"]) == 0
+
+    output = capsys.readouterr().out
+    assert captured == {"labels": None, "state": "open"}
+    assert "#1" in output
+    assert "#2" in output
+
+
+def test_cli_list_prs(tmp_path: Path, monkeypatch, capsys):
+    path = tmp_path / "config.yaml"
+    path.write_text("repo: owner/repo\n", encoding="utf-8")
+    captured = {}
+
+    class FakePRGH:
+        def __init__(self, repo: str):
+            self.repo = repo
+
+        def list_prs(self, state: str = "open"):
+            captured["state"] = state
+            return [
+                PullRequest(
+                    5,
+                    "Worker PR",
+                    "OPEN",
+                    updated_at="2026-01-02T00:00:00Z",
+                    labels=["ai-pr-opened"],
+                    is_draft=True,
+                    head_ref="ai/issue-5",
+                    base_ref="main",
+                )
+            ]
+
+    monkeypatch.setattr(cli, "GHClient", FakePRGH)
+
+    assert cli.main(["list", "--config", str(path), "--prs"]) == 0
+
+    output = capsys.readouterr().out
+    assert captured == {"state": "all"}
+    assert "#5\tOPEN\tdraft\t2026-01-02T00:00:00Z\tmain<-ai/issue-5" in output
+
+
+def test_cli_list_open_prs(tmp_path: Path, monkeypatch, capsys):
+    path = tmp_path / "config.yaml"
+    path.write_text("repo: owner/repo\n", encoding="utf-8")
+    captured = {}
+
+    class FakeOpenPRGH:
+        def __init__(self, repo: str):
+            self.repo = repo
+
+        def list_prs(self, state: str = "open"):
+            captured["state"] = state
+            return [
+                PullRequest(
+                    6,
+                    "Open Worker PR",
+                    "OPEN",
+                    updated_at="2026-01-03T00:00:00Z",
+                    is_draft=False,
+                    head_ref="ai/issue-6",
+                    base_ref="main",
+                )
+            ]
+
+    monkeypatch.setattr(cli, "GHClient", FakeOpenPRGH)
+
+    assert cli.main(["list", "--config", str(path), "--open-prs"]) == 0
+
+    output = capsys.readouterr().out
+    assert captured == {"state": "open"}
+    assert "#6\tOPEN\tready\t2026-01-03T00:00:00Z\tmain<-ai/issue-6" in output
 
 
 def test_run_once_passes_model_and_reasoning_overrides(tmp_path: Path, monkeypatch):

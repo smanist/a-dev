@@ -42,6 +42,15 @@ List candidate issues:
 a-dev list
 ```
 
+List open issues, all issues, open pull requests, or all pull requests:
+
+```bash
+a-dev list --open-issues
+a-dev list --all-issues
+a-dev list --open-prs
+a-dev list --prs
+```
+
 By default, candidates exclude issues that have open native GitHub issue
 dependencies in their `blocked by` relationship, in addition to excluding
 configured blocked labels such as `blocked` and `needs-human`.
