@@ -12,6 +12,7 @@ import tempfile
 import time
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -53,6 +54,7 @@ from .worktree import (
 
 
 A_DEV_GITIGNORE_ENTRIES = [".a-dev/"]
+VSCODE_TEMPLATE_FILES = ("settings.json", "tasks.json")
 CREATE_MODES = ("auto", "single", "parent")
 MERGE_METHODS = ("merge", "squash", "rebase")
 
@@ -233,6 +235,24 @@ def _ensure_gitignore_entries(path: Path = Path(".gitignore")) -> None:
         output += "\n\n"
     output += "# A-Dev artifacts\n" + "\n".join(missing) + "\n"
     path.write_text(output, encoding="utf-8")
+
+
+def _ensure_vscode_workspace_files(
+    root: Path = Path("."), force: bool = False
+) -> list[Path]:
+    template_dir = files("ai_issue_worker").joinpath("templates", "vscode")
+    vscode_dir = root / ".vscode"
+    vscode_dir.mkdir(parents=True, exist_ok=True)
+
+    written = []
+    for name in VSCODE_TEMPLATE_FILES:
+        target = vscode_dir / name
+        if target.exists() and not force:
+            continue
+        source = template_dir.joinpath(name)
+        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        written.append(target)
+    return written
 
 
 def _first_nonempty_line(text: str) -> str:
@@ -738,11 +758,12 @@ def cmd_init(args) -> int:
     try:
         write_default_config(path, force=args.force, repo=repo, base_branch=base_branch)
         _ensure_gitignore_entries()
+        _ensure_vscode_workspace_files(force=args.force)
     except ConfigError as exc:
         print(exc, file=sys.stderr)
         return 1
     except OSError as exc:
-        print(f"failed to update .gitignore: {exc}", file=sys.stderr)
+        print(f"failed to initialize local files: {exc}", file=sys.stderr)
         return 1
     print(f"created {args.path}")
     if repo == "owner/repo":

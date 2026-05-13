@@ -41,7 +41,7 @@ so later child prompts receive prior summaries, PR URLs, and preserved decisions
 ### `cli.py`
 
 - Parses subcommands.
-- Handles config bootstrapping in `init`.
+- Handles config, `.gitignore`, and bundled VS Code task bootstrapping in `init`.
 - Drafts single or parent/sub-issue plans in `create`, including `--mode auto|single|parent`.
 - Exposes manual/operator commands such as `inspect`, `retry`, `resume`, and `clean`.
 - Starts or stops the daemon.

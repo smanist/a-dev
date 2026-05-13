@@ -8,6 +8,11 @@ Bootstrap config and labels:
 a-dev init
 ```
 
+`init` writes `.a-dev.yaml`, ensures `.a-dev/` is ignored, creates bundled
+`.vscode/settings.json` and `.vscode/tasks.json` files when missing, and creates
+or updates automation labels unless `--no-create-labels` is passed. Use
+`--force` to overwrite existing config and VS Code template files.
+
 Inspect candidate issues:
 
 ```bash

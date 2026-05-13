@@ -28,8 +28,32 @@ def test_cli_init_smoke(tmp_path: Path, monkeypatch):
 
     assert cli.main(["init", "--path", "config.yaml", "--no-create-labels"]) == 0
     assert (tmp_path / "config.yaml").exists()
+    assert (tmp_path / ".vscode" / "settings.json").exists()
+    tasks = (tmp_path / ".vscode" / "tasks.json").read_text(encoding="utf-8")
+    assert '"label": "Start a-dev"' in tasks
     gitignore = (tmp_path / ".gitignore").read_text(encoding="utf-8")
     assert ".a-dev/" in gitignore
+
+
+def test_cli_init_preserves_existing_vscode_files_unless_forced(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+
+    vscode_dir = tmp_path / ".vscode"
+    vscode_dir.mkdir()
+    tasks = vscode_dir / "tasks.json"
+    tasks.write_text('{"custom": true}\n', encoding="utf-8")
+
+    assert cli.main(["init", "--path", "config.yaml", "--no-create-labels"]) == 0
+    assert tasks.read_text(encoding="utf-8") == '{"custom": true}\n'
+    assert (vscode_dir / "settings.json").exists()
+
+    assert (
+        cli.main(["init", "--path", "config.yaml", "--force", "--no-create-labels"])
+        == 0
+    )
+    assert '"label": "Start a-dev"' in tasks.read_text(encoding="utf-8")
 
 
 def test_cli_init_appends_missing_gitignore_entries_once(tmp_path: Path, monkeypatch):

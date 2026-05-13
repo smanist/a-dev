@@ -34,7 +34,9 @@ It also creates or updates the GitHub labels used by the automation, including
 `ai-ready`, `ai-resume`, `ai-working`, `ai-failed`, and `ai-pr-opened`, when `gh` is
 authenticated for the inferred repo. Use `--repo`, `--base-branch`, or
 `--no-create-labels` to override those defaults. It appends the local artifact
-directory `.a-dev/` to `.gitignore`.
+directory `.a-dev/` to `.gitignore`, and creates `.vscode/settings.json` plus
+`.vscode/tasks.json` from the bundled templates. Existing VS Code files are
+preserved unless `--force` is used.
 
 List candidate issues:
 

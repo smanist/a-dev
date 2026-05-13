@@ -19,6 +19,9 @@ a-dev = "ai_issue_worker.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+ai_issue_worker = ["templates/vscode/*.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
