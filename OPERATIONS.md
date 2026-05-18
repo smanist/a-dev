@@ -75,6 +75,11 @@ a-dev logs
 a-dev stop
 ```
 
+`a-dev status` reports both daemon health and job health. It shows whether the
+daemon is running, whether the worker lock is held, the latest local job record,
+any unfinished `working` job, open `ai-working` issues, and diagnostics for
+common interrupted states such as Codex finishing before verification starts.
+
 Inspect local worker state:
 
 ```bash
@@ -87,11 +92,34 @@ Generate an Obsidian-friendly kanban checklist from `.a-dev/runs`:
 a-dev kanban
 ```
 
-Retry a failed issue:
+Enable an issue for worker selection. This adds `ai-ready` and removes
+`ai-failed`, so it also replaces the old retry flow. It leaves configured
+blocked labels such as `blocked` and `needs-human` in place so dependency
+constraints remain separate:
 
 ```bash
-a-dev retry <issue-number>
+a-dev enable <issue-number>
 ```
+
+Disable an issue temporarily. This removes `ai-ready` and any queued
+`ai-resume` label so neither fresh work nor queued PR continuation will be
+selected by the scheduler:
+
+```bash
+a-dev disable <issue-number>
+```
+
+Reset an issue for a fresh worker run during debugging:
+
+```bash
+a-dev reset <issue-number>
+```
+
+`reset` closes recorded A-Dev PRs for the issue, requests branch deletion from
+GitHub, removes local worker worktrees and branches, deletes the issue run
+directory, clears A-Dev lifecycle labels, and adds `ai-ready`. Because GitHub PR
+records cannot be deleted, reset closes them. Use `--dry-run` to preview the
+cleanup before applying it.
 
 Resume an existing A-Dev PR with follow-up instructions:
 
@@ -145,10 +173,11 @@ The highest-leverage config sections in `.a-dev.yaml` are:
 
 For a specific issue run:
 
-1. Open `.a-dev/runs/issue-<n>/latest.json` for overall status.
-2. Read `.a-dev/runs/issue-<n>/artifacts.log` for the artifact timeline.
-3. Read `.a-dev/runs/issue-<n>/prompt.md` to see the latest prompt the worker sent.
-4. Read `.a-dev/runs/issue-<n>/codex.log`, `verify.log`, `review.md`, `summary.md`, and `pr_body.md` depending on the failure stage.
+1. Run `a-dev status` to check the daemon, worker lock, latest job phase, and interruption diagnostics.
+2. Open `.a-dev/runs/issue-<n>/latest.json` for overall status and phase.
+3. Read `.a-dev/runs/issue-<n>/artifacts.log` for the artifact timeline.
+4. Read `.a-dev/runs/issue-<n>/prompt.md` to see the latest prompt the worker sent.
+5. Read `.a-dev/runs/issue-<n>/codex.log`, `verify.log`, `review.md`, `summary.md`, and `pr_body.md` depending on the failure stage.
 
 For a local markdown board:
 
@@ -164,9 +193,10 @@ For a parent issue run:
 
 For daemon state:
 
-1. Read `.a-dev/runtime/worker.status.json`.
-2. Read `.a-dev/logs/worker.log`.
-3. Check `.a-dev/runtime/worker.lock` and `.a-dev/runtime/worker.pid`.
+1. Run `a-dev status`.
+2. Read `.a-dev/runtime/worker.status.json`.
+3. Read `.a-dev/logs/worker.log`.
+4. Check `.a-dev/runtime/worker.lock` and `.a-dev/runtime/worker.pid`.
 
 ## Common Failure Classes
 
@@ -186,6 +216,7 @@ For daemon state:
 - Parent issues carry `ai-parent` and orchestrate `ai-child` sub-issues. Children remain the code-producing PR units.
 - Parent runs process children serially up to `issue_selection.max_parent_children_per_run` and leave the parent `ai-ready` if blocked or only partially drained.
 - `merge` is an explicit operator action, not part of the daemon loop. It assumes CI/verifier confidence was established locally before the command is run.
+- `reset` is a destructive debugging action for rerunning an issue from scratch. It removes local run state and closes recorded PRs instead of preserving resume context.
 - `clean --delete-local-branches` deletes local branches with `git branch -D`; use it deliberately.
 - `keep_worktree_on_failure` and `keep_worktree_on_success` change how much state remains available for inspection after runs.
 - `resume` without `--queue` bypasses normal `ai-ready` selection. It reuses the recorded branch/worktree for an existing PR, pulls in the latest local resume summary plus new issue comments and PR comments/reviews since the last run, and updates the existing PR body after verification.

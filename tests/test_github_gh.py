@@ -446,6 +446,30 @@ def test_ready_pr_marks_pr_ready_for_review(monkeypatch):
     ]
 
 
+def test_close_pr_can_delete_branch(monkeypatch):
+    captured = {}
+
+    def fake_run_cmd(args):
+        captured["args"] = args
+        return Result("")
+
+    monkeypatch.setattr("ai_issue_worker.github_gh.run_cmd", fake_run_cmd)
+
+    GHClient("owner/repo").close_pr(
+        "https://github.com/owner/repo/pull/2", delete_branch=True
+    )
+
+    assert captured["args"] == [
+        "gh",
+        "pr",
+        "close",
+        "https://github.com/owner/repo/pull/2",
+        "--repo",
+        "owner/repo",
+        "--delete-branch",
+    ]
+
+
 def test_merge_pr_supports_auto_and_admin_flags(monkeypatch):
     captured = []
 

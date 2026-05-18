@@ -1,4 +1,5 @@
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,18 @@ class FakeGH:
 
     def blocked_by(self, number: int):
         return []
+
+
+def test_top_level_help_summarizes_commands():
+    help_text = cli.build_parser().format_help()
+
+    assert "init                bootstrap config, labels, and editor tasks" in help_text
+    assert "run-once            process one eligible issue or resume job" in help_text
+    assert "enable              mark an issue ready for worker selection" in help_text
+    assert "disable             remove worker queue labels from an issue" in help_text
+    assert "reset               clear an issue run and mark it ready again" in help_text
+    assert "clean               remove old run directories and worktrees" in help_text
+    assert "retry" not in help_text
 
 
 def test_cli_init_smoke(tmp_path: Path, monkeypatch):
@@ -391,6 +404,276 @@ def test_resume_queue_adds_resume_label_and_comment(
     assert "issue #123 queued for resume" in capsys.readouterr().out
 
 
+def test_enable_marks_failed_issue_ready_without_clearing_blockers(
+    tmp_path: Path, monkeypatch, capsys
+):
+    (tmp_path / ".a-dev.yaml").write_text("repo: owner/repo\n", encoding="utf-8")
+    captured = {}
+
+    class FakeEnableGH:
+        def __init__(self, repo: str):
+            self.repo = repo
+
+        def view_issue(self, number: int):
+            captured["viewed"] = number
+            return Issue(
+                number,
+                "Failed",
+                "",
+                ["ai-failed", "blocked", "needs-human"],
+                "open",
+            )
+
+        def remove_label(self, number: int, label: str):
+            captured.setdefault("removed", []).append((number, label))
+
+        def add_label(self, number: int, label: str):
+            captured.setdefault("added", []).append((number, label))
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "GHClient", FakeEnableGH)
+
+    assert cli.main(["enable", "123"]) == 0
+
+    assert captured["viewed"] == 123
+    assert captured["removed"] == [(123, "ai-failed")]
+    assert captured["added"] == [(123, "ai-ready")]
+    assert "issue #123 enabled" in capsys.readouterr().out
+
+
+def test_enable_run_now_processes_one_issue_with_overrides(tmp_path: Path, monkeypatch):
+    (tmp_path / ".a-dev.yaml").write_text("repo: owner/repo\n", encoding="utf-8")
+    captured = {}
+
+    class FakeEnableGH:
+        def __init__(self, repo: str):
+            self.repo = repo
+
+        def view_issue(self, number: int):
+            return Issue(number, "Failed", "", ["ai-failed"], "open")
+
+        def remove_label(self, number: int, label: str):
+            captured.setdefault("removed", []).append((number, label))
+
+        def add_label(self, number: int, label: str):
+            captured.setdefault("added", []).append((number, label))
+
+    def fake_run_once(config_path, repo_root=None, overrides=None):
+        assert overrides is not None
+        captured["config_path"] = config_path
+        captured["repo_root"] = repo_root
+        captured["model"] = overrides.model
+        captured["reasoning"] = overrides.reasoning
+        return 0
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "GHClient", FakeEnableGH)
+    monkeypatch.setattr(cli, "run_once", fake_run_once)
+
+    assert (
+        cli.main(
+            [
+                "enable",
+                "123",
+                "--run-now",
+                "--model",
+                "gpt-5.4-mini",
+                "--reasoning",
+                "high",
+            ]
+        )
+        == 0
+    )
+
+    assert captured["removed"] == [(123, "ai-failed")]
+    assert captured["added"] == [(123, "ai-ready")]
+    assert captured["config_path"] == Path(".a-dev.yaml")
+    assert captured["model"] == "gpt-5.4-mini"
+    assert captured["reasoning"] == "high"
+
+
+def test_disable_removes_ready_and_resume_labels(tmp_path: Path, monkeypatch, capsys):
+    (tmp_path / ".a-dev.yaml").write_text("repo: owner/repo\n", encoding="utf-8")
+    captured = {}
+
+    class FakeDisableGH:
+        def __init__(self, repo: str):
+            self.repo = repo
+
+        def view_issue(self, number: int):
+            captured["viewed"] = number
+            return Issue(
+                number,
+                "Queued",
+                "",
+                ["ai-ready", "ai-pr-opened", "ai-resume"],
+                "open",
+            )
+
+        def remove_label(self, number: int, label: str):
+            captured.setdefault("removed", []).append((number, label))
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "GHClient", FakeDisableGH)
+
+    assert cli.main(["disable", "123"]) == 0
+
+    assert captured["viewed"] == 123
+    assert captured["removed"] == [(123, "ai-ready"), (123, "ai-resume")]
+    assert "issue #123 disabled" in capsys.readouterr().out
+
+
+def test_reset_closes_pr_deletes_state_and_marks_issue_ready(
+    tmp_path: Path, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".a-dev.yaml").write_text("repo: owner/repo\n", encoding="utf-8")
+    run_dir = tmp_path / ".a-dev" / "runs" / "issue-123"
+    run_dir.mkdir(parents=True)
+    worktree = tmp_path / ".a-dev" / "worktrees" / "issue-123"
+    worktree.mkdir(parents=True)
+    (run_dir / "run-20260423-000000.json").write_text(
+        json.dumps(
+            {
+                "issue_number": 123,
+                "issue_title": "Fix bug",
+                "branch_name": "ai/issue-123-fix-bug",
+                "worktree_path": str(worktree),
+                "status": "pr_opened",
+                "phase": "finalizing",
+                "started_at": "2026-04-23T00:00:00Z",
+                "base_branch": "main",
+                "stack_depth": 0,
+                "blocker_issue_numbers": [],
+                "finished_at": "2026-04-23T00:10:00Z",
+                "pr_url": "https://github.com/owner/repo/pull/9",
+                "error_summary": None,
+                "changed_files": [],
+                "verifier_passed": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "latest.json").write_text(
+        (run_dir / "run-20260423-000000.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    captured = {}
+
+    class ResetGH:
+        def __init__(self, repo: str):
+            self.repo = repo
+
+        def view_issue(self, number: int):
+            captured["viewed"] = number
+            return Issue(
+                number,
+                "Fix bug",
+                "",
+                ["ai-working", "ai-failed", "ai-pr-opened", "ai-resume"],
+                "open",
+            )
+
+        def close_pr(self, pr_url: str, delete_branch: bool = False):
+            captured["closed"] = (pr_url, delete_branch)
+
+        def remove_label(self, number: int, label: str):
+            captured.setdefault("removed_labels", []).append((number, label))
+
+        def add_label(self, number: int, label: str):
+            captured.setdefault("added_labels", []).append((number, label))
+
+    def fake_remove_worktree(path: Path, force: bool = False):
+        captured["removed_worktree"] = (path, force)
+        shutil.rmtree(path)
+
+    def fake_delete_local_branch(branch: str, force: bool = False):
+        captured["local_branch"] = (branch, force)
+
+    monkeypatch.setattr(cli, "GHClient", ResetGH)
+    monkeypatch.setattr(cli, "remove_worktree", fake_remove_worktree)
+    monkeypatch.setattr(cli, "current_branch", lambda path=None: "main")
+    monkeypatch.setattr(
+        cli,
+        "delete_remote_branch",
+        lambda branch: captured.setdefault("remote_branch", branch),
+    )
+    monkeypatch.setattr(cli, "local_branch_exists", lambda branch: True)
+    monkeypatch.setattr(cli, "delete_local_branch", fake_delete_local_branch)
+
+    assert cli.main(["reset", "123"]) == 0
+
+    assert captured["viewed"] == 123
+    assert captured["closed"] == ("https://github.com/owner/repo/pull/9", True)
+    assert captured["removed_labels"] == [
+        (123, "ai-working"),
+        (123, "ai-failed"),
+        (123, "ai-pr-opened"),
+        (123, "ai-resume"),
+    ]
+    assert captured["added_labels"] == [(123, "ai-ready")]
+    assert captured["removed_worktree"] == (worktree, True)
+    assert captured["remote_branch"] == "ai/issue-123-fix-bug"
+    assert captured["local_branch"] == ("ai/issue-123-fix-bug", True)
+    assert not run_dir.exists()
+    assert "issue #123 reset" in capsys.readouterr().out
+
+
+def test_status_reports_active_job_phase_and_diagnostic(
+    tmp_path: Path, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".a-dev.yaml").write_text("repo: owner/repo\n", encoding="utf-8")
+    run_dir = tmp_path / ".a-dev" / "runs" / "issue-87"
+    run_dir.mkdir(parents=True)
+    (run_dir / "codex-20260517-182637.log").write_text("done\n", encoding="utf-8")
+    (run_dir / "codex.log").write_text("done\n", encoding="utf-8")
+    (run_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "issue_number": 87,
+                "issue_title": "Add a scripts guide",
+                "branch_name": "ai/issue-87-add-a-scripts-guide",
+                "worktree_path": str(tmp_path / ".a-dev" / "worktrees" / "issue-87"),
+                "status": "working",
+                "phase": "codex_finished",
+                "started_at": "2026-05-17T18:00:00Z",
+                "base_branch": "main",
+                "stack_depth": 0,
+                "blocker_issue_numbers": [],
+                "finished_at": None,
+                "pr_url": None,
+                "error_summary": None,
+                "changed_files": [],
+                "verifier_passed": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class StatusGH:
+        def __init__(self, repo: str):
+            self.repo = repo
+
+        def list_issues(self, labels):
+            return [Issue(87, "Add a scripts guide", "", ["ai-working"], "open")]
+
+    monkeypatch.setattr(cli, "GHClient", StatusGH)
+
+    assert cli.main(["status"]) == 0
+
+    output = capsys.readouterr().out
+    assert "daemon: no" in output
+    assert "run_once_lock: free" in output
+    assert "active_or_stale_job:" in output
+    assert "issue: #87 Add a scripts guide" in output
+    assert "phase: codex_finished" in output
+    assert "latest_artifact: codex-20260517-182637.log" in output
+    assert "next_expected: verify.log" in output
+    assert "Codex completed, verification has not started" in output
+    assert "#87: Add a scripts guide" in output
+
+
 def test_merge_uses_recorded_pr_and_deletes_branch(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".a-dev.yaml").write_text("repo: owner/repo\n", encoding="utf-8")
@@ -404,6 +687,7 @@ def test_merge_uses_recorded_pr_and_deletes_branch(tmp_path: Path, monkeypatch, 
                 "branch_name": "ai/issue-123-fix-bug",
                 "worktree_path": str(tmp_path / ".a-dev" / "worktrees" / "issue-123"),
                 "status": "pr_opened",
+                "phase": "finalizing",
                 "started_at": "2026-04-23T00:00:00Z",
                 "base_branch": "main",
                 "stack_depth": 0,
@@ -488,6 +772,7 @@ def test_merge_auto_enables_auto_merge_without_deleting_branch(
                 "branch_name": "ai/issue-123-fix-bug",
                 "worktree_path": str(tmp_path / ".a-dev" / "worktrees" / "issue-123"),
                 "status": "pr_opened",
+                "phase": "finalizing",
                 "started_at": "2026-04-23T00:00:00Z",
                 "base_branch": "main",
                 "stack_depth": 0,
@@ -559,6 +844,7 @@ def test_merge_ready_marks_pr_ready_before_merging(tmp_path: Path, monkeypatch, 
                 "branch_name": "ai/issue-123-fix-bug",
                 "worktree_path": str(tmp_path / ".a-dev" / "worktrees" / "issue-123"),
                 "status": "pr_opened",
+                "phase": "finalizing",
                 "started_at": "2026-04-23T00:00:00Z",
                 "base_branch": "main",
                 "stack_depth": 0,
@@ -629,6 +915,7 @@ def test_merge_rejects_latest_non_pr_status(tmp_path: Path, monkeypatch, capsys)
                 "branch_name": "ai/issue-123-fix-bug",
                 "worktree_path": str(tmp_path / ".a-dev" / "worktrees" / "issue-123"),
                 "status": "verify_failed",
+                "phase": "finalizing",
                 "started_at": "2026-04-23T00:00:00Z",
                 "base_branch": "main",
                 "stack_depth": 0,
@@ -1000,6 +1287,7 @@ def test_cli_kanban_writes_obsidian_markdown_from_run_artifacts(
         "branch_name": "ai/issue-42-add-kanban",
         "worktree_path": str(tmp_path / "worktrees" / "issue-42"),
         "status": "pr_opened",
+        "phase": "finalizing",
         "started_at": "2026-04-23T00:00:00Z",
         "base_branch": "main",
         "stack_depth": 0,
@@ -1035,6 +1323,7 @@ def test_cli_kanban_writes_obsidian_markdown_from_run_artifacts(
         "branch_name": "ai/issue-43-fail-verifier",
         "worktree_path": str(tmp_path / "worktrees" / "issue-43"),
         "status": "verify_failed",
+        "phase": "finalizing",
         "started_at": "2026-04-22T00:00:00Z",
         "base_branch": "main",
         "stack_depth": 0,

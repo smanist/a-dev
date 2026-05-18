@@ -43,7 +43,7 @@ so later child prompts receive prior summaries, PR URLs, and preserved decisions
 - Parses subcommands.
 - Handles config, `.gitignore`, and bundled VS Code task bootstrapping in `init`.
 - Drafts single or parent/sub-issue plans in `create`, including `--mode auto|single|parent`.
-- Exposes manual/operator commands such as `inspect`, `retry`, `resume`, and `clean`.
+- Exposes manual/operator commands such as `inspect`, `enable`, `disable`, `reset`, `resume`, and `clean`.
 - Starts or stops the daemon.
 - Delegates all issue execution to `runner.run_once()`.
 
@@ -64,6 +64,7 @@ This is the repo's center of gravity.
 - Supports explicit continuation of an existing A-Dev PR by reusing the recorded branch/worktree and updating the existing PR instead of opening a new one.
 - Supports queued continuation work through the `ai-resume` label so the daemon and `run-once` path can process PR revisions alongside new issues.
 - Supports explicit operator-driven PR merge/finalization from local `pr_opened` state while keeping the daemon loop non-merging.
+- Supports explicit issue reset for debugging by closing recorded PRs, deleting local worker state, and returning the issue to `ai-ready`.
 
 When making behavioral changes, start here and verify the corresponding tests in `tests/test_runner_review.py`.
 
@@ -107,7 +108,7 @@ The filesystem is the operational state store:
 
 Per-issue run directories contain both timestamped files and latest aliases. Common artifacts:
 
-- `run-<stamp>.json` and `latest.json`
+- `run-<stamp>.json` and `latest.json`, including the coarse `status` and finer-grained `phase`
 - `parent-plan-<stamp>.json` and `parent-plan.json` for parent DAG snapshots
 - `parent-memory-<stamp>.md` and `parent-memory.md` for parent context carried between child runs
 - `prompt-<stamp>.md` and `prompt.md`
@@ -119,6 +120,8 @@ Per-issue run directories contain both timestamped files and latest aliases. Com
 - `artifacts.log`
 
 The run directory is important because stacked PR selection reads the latest job record for blocker issues.
+`a-dev reset <issue>` deliberately removes that issue's run directory, so a reset
+issue no longer contributes stacked-PR blocker state until it is run again.
 
 ## Review and Repair Semantics
 

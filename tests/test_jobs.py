@@ -16,6 +16,7 @@ def test_job_record_written_and_loaded(tmp_path: Path):
         branch_name="ai/issue-123-title",
         worktree_path="/tmp/worktree",
         status="selected",
+        phase="selected",
         started_at="2026-04-23T00:00:00Z",
         finished_at=None,
         pr_url=None,

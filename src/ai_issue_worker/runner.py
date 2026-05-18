@@ -208,9 +208,17 @@ def _write_record(
     run_dir: Path, record: JobRecord, status: str, error: str | None = None
 ) -> None:
     record.status = status
+    record.phase = "finalizing"
     record.error_summary = error
     record.finished_at = utc_iso()
     write_job_record(run_dir, record)
+
+
+def _write_phase(
+    run_dir: Path, record: JobRecord, phase: str, timestamp: str | None = None
+) -> None:
+    record.phase = phase
+    write_job_record(run_dir, record, timestamp)
 
 
 def _record_for(
@@ -226,6 +234,7 @@ def _record_for(
         branch_name=branch,
         worktree_path=str(worktree_path),
         status="selected",
+        phase="selected",
         started_at=utc_iso(),
         base_branch=plan.base_branch,
         stack_depth=plan.stack_depth,
@@ -584,7 +593,9 @@ def _run_verification_with_repairs(
     worktree_path: Path,
     run_dir: Path,
     stamp: str,
+    record: JobRecord,
 ) -> tuple[bool, VerifyResult, DiffSummary, str, str]:
+    _write_phase(run_dir, record, "verifying", stamp)
     verify_log = run_dir / f"verify-{stamp}.log"
     verify = run_verifier(config.verify, worktree_path, verify_log)
     record_artifact_file(verify_log)
@@ -601,6 +612,7 @@ def _run_verification_with_repairs(
         )
         repair_prompt_path = run_dir / f"prompt-{repair_stamp}.md"
         write_text_artifact(repair_prompt_path, run_dir / "prompt.md", repair_prompt)
+        _write_phase(run_dir, record, "codex_running", repair_stamp)
         repair = _run_codex_session(
             config,
             worktree_path,
@@ -615,6 +627,8 @@ def _run_verification_with_repairs(
                 f"Repair attempt failed with exit code {repair.exit_code}.",
                 "agent",
             )
+        _write_phase(run_dir, record, "codex_finished", repair_stamp)
+        _write_phase(run_dir, record, "verifying", repair_stamp)
         verify_log = run_dir / f"verify-{repair_stamp}.log"
         verify = run_verifier(config.verify, worktree_path, verify_log)
         record_artifact_file(verify_log)
@@ -637,6 +651,7 @@ def _run_review_loop(
     worktree_path: Path,
     run_dir: Path,
     stamp: str,
+    record: JobRecord,
     verify: VerifyResult,
     diff: DiffSummary,
 ) -> tuple[bool, VerifyResult, DiffSummary, str, str]:
@@ -652,6 +667,7 @@ def _run_review_loop(
         review_prompt_path = run_dir / f"prompt-{review_stamp}.md"
         write_text_artifact(review_prompt_path, run_dir / "prompt.md", review_prompt)
         before_review = _diff_snapshot(worktree_path)
+        _write_phase(run_dir, record, "reviewing", review_stamp)
         review = _run_codex_session(
             config,
             worktree_path,
@@ -713,6 +729,7 @@ def _run_review_loop(
         )
         fix_prompt_path = run_dir / f"prompt-{fix_stamp}.md"
         write_text_artifact(fix_prompt_path, run_dir / "prompt.md", fix_prompt)
+        _write_phase(run_dir, record, "codex_running", fix_stamp)
         fix = _run_codex_session(
             config,
             worktree_path,
@@ -727,6 +744,7 @@ def _run_review_loop(
                 f"Review fix attempt failed with exit code {fix.exit_code}.",
                 "agent",
             )
+        _write_phase(run_dir, record, "codex_finished", fix_stamp)
 
         ok, verify, diff, error, failure_kind = _run_verification_with_repairs(
             config,
@@ -734,6 +752,7 @@ def _run_review_loop(
             worktree_path,
             run_dir,
             fix_stamp,
+            record,
         )
         if not ok:
             return (
@@ -752,6 +771,7 @@ def _run_agent_and_verify(
     worktree_path: Path,
     run_dir: Path,
     stamp: str,
+    record: JobRecord,
     follow_up: str = "",
 ) -> tuple[bool, VerifyResult | None, DiffSummary, str, str]:
     prompt_text = build_prompt(issue, config, repo_root, follow_up=follow_up)
@@ -759,6 +779,7 @@ def _run_agent_and_verify(
     write_text_artifact(prompt_path, run_dir / "prompt.md", prompt_text)
 
     codex_log = run_dir / f"codex-{stamp}.log"
+    _write_phase(run_dir, record, "codex_running", stamp)
     agent = _run_codex_session(config, worktree_path, prompt_path, codex_log)
     if not agent.success:
         return (
@@ -771,15 +792,16 @@ def _run_agent_and_verify(
             ),
             "agent",
         )
+    _write_phase(run_dir, record, "codex_finished", stamp)
 
     ok, verify, diff, error, failure_kind = _run_verification_with_repairs(
-        config, issue, worktree_path, run_dir, stamp
+        config, issue, worktree_path, run_dir, stamp, record
     )
     if not ok:
         return ok, verify, diff, error, failure_kind
 
     return _run_review_loop(
-        config, issue, repo_root, worktree_path, run_dir, stamp, verify, diff
+        config, issue, repo_root, worktree_path, run_dir, stamp, record, verify, diff
     )
 
 
@@ -861,6 +883,7 @@ def _parent_record(parent: Issue, paths: dict[str, Path]) -> JobRecord:
         branch_name="",
         worktree_path=str(paths["worktree_root"] / f"parent-{parent.number}"),
         status="selected",
+        phase="selected",
         started_at=utc_iso(),
         base_branch=None,
         stack_depth=0,
@@ -1047,6 +1070,7 @@ def process_parent_issue(
         except GHError:
             pass
         record.status = "working"
+        record.phase = "working_label_added"
         write_job_record(run_dir, record, stamp)
         children = gh.sub_issues(parent.number)
         _write_parent_plan(run_dir, gh, parent, children)
@@ -1125,10 +1149,12 @@ def process_issue(
 
     gh.add_label(issue.number, config.issue_selection.working_label)
     record.status = "working"
+    record.phase = "working_label_added"
     write_job_record(run_dir, record, stamp)
 
     try:
         add_worktree(worktree_path, branch, plan.base_branch)
+        _write_phase(run_dir, record, "worktree_ready", stamp)
     except GitError as exc:
         _finalize_issue_failure(
             gh,
@@ -1148,6 +1174,7 @@ def process_issue(
         worktree_path,
         run_dir,
         stamp,
+        record,
         follow_up=follow_up,
     )
     record.changed_files = diff.changed_files
@@ -1172,10 +1199,12 @@ def process_issue(
         return EXIT_VERIFY
 
     try:
+        _write_phase(run_dir, record, "committing", stamp)
         commit_message = render_template(config.git.commit_message_template, issue)
         commit_all(worktree_path, commit_message)
         record.status = "committed"
         write_job_record(run_dir, record, stamp)
+        _write_phase(run_dir, record, "pushing", stamp)
         push_branch(worktree_path, branch)
         record.status = "pushed"
         write_job_record(run_dir, record, stamp)
@@ -1197,6 +1226,7 @@ def process_issue(
     pr_body_path = run_dir / f"pr-body-{stamp}.md"
     write_text_artifact(pr_body_path, run_dir / "pr_body.md", pr_body)
     try:
+        _write_phase(run_dir, record, "opening_pr", stamp)
         pr_title = render_template(config.pr.title_template, issue)
         pr_url = gh.create_pr(
             plan.base_branch, branch, pr_title, pr_body_path, draft=config.pr.draft
@@ -1325,12 +1355,14 @@ def process_issue_resume(
         except GHError:
             pass
         record.status = "working"
+        record.phase = "working_label_added"
         write_job_record(run_dir, record, stamp)
     except GHError:
         pass
 
     try:
         ensure_worktree(worktree_path, branch)
+        _write_phase(run_dir, record, "worktree_ready", stamp)
     except GitError as exc:
         _finalize_issue_failure(
             gh,
@@ -1350,6 +1382,7 @@ def process_issue_resume(
         worktree_path,
         run_dir,
         stamp,
+        record,
         follow_up=follow_up,
     )
     record.changed_files = diff.changed_files
@@ -1374,10 +1407,12 @@ def process_issue_resume(
         return EXIT_VERIFY
 
     try:
+        _write_phase(run_dir, record, "committing", stamp)
         commit_message = render_template(config.git.commit_message_template, issue)
         commit_all(worktree_path, commit_message)
         record.status = "committed"
         write_job_record(run_dir, record, stamp)
+        _write_phase(run_dir, record, "pushing", stamp)
         push_branch(worktree_path, branch)
         record.status = "pushed"
         write_job_record(run_dir, record, stamp)
@@ -1399,6 +1434,7 @@ def process_issue_resume(
     pr_body_path = run_dir / f"pr-body-{stamp}.md"
     write_text_artifact(pr_body_path, run_dir / "pr_body.md", pr_body)
     try:
+        _write_phase(run_dir, record, "opening_pr", stamp)
         pr_title = render_template(config.pr.title_template, issue)
         gh.update_pr(pr_url, pr_title, pr_body_path)
     except GHError as exc:

@@ -193,8 +193,12 @@ def ensure_worktree(path: Path, branch: str) -> None:
         raise GitError(result.stderr.strip() or "git worktree add failed")
 
 
-def remove_worktree(path: Path) -> None:
-    result = run_cmd(["git", "worktree", "remove", str(path)])
+def remove_worktree(path: Path, force: bool = False) -> None:
+    args = ["git", "worktree", "remove"]
+    if force:
+        args.append("--force")
+    args.append(str(path))
+    result = run_cmd(args)
     if result.exit_code != 0:
         raise GitError(result.stderr.strip() or "git worktree remove failed")
     run_cmd(["git", "worktree", "prune"])

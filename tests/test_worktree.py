@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest  # type: ignore[reportMissingImports]
 
 from ai_issue_worker.shell import run_cmd
-from ai_issue_worker.worktree import GitError, ensure_git_ok
+from ai_issue_worker.worktree import GitError, ensure_git_ok, remove_worktree
 
 
 def init_remote_backed_repo(path: Path):
@@ -37,3 +37,27 @@ def test_ensure_git_ok_reports_real_dirty_paths(tmp_path: Path, monkeypatch):
     (repo / "dirty.py").write_text("x = 1\n", encoding="utf-8")
     with pytest.raises(GitError, match="dirty.py"):
         ensure_git_ok("main", allowed_dirty_prefixes=[".a-dev"])
+
+
+def test_remove_worktree_supports_force(monkeypatch):
+    captured = {}
+
+    class Result:
+        exit_code = 0
+        stderr = ""
+
+    def fake_run_cmd(args):
+        captured.setdefault("args", []).append(args)
+        return Result()
+
+    monkeypatch.setattr("ai_issue_worker.worktree.run_cmd", fake_run_cmd)
+
+    remove_worktree(Path("/tmp/worktree"), force=True)
+
+    assert captured["args"][0] == [
+        "git",
+        "worktree",
+        "remove",
+        "--force",
+        "/tmp/worktree",
+    ]

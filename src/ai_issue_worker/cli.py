@@ -11,7 +11,7 @@ import sys
 import tempfile
 import time
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
@@ -27,7 +27,13 @@ from .config import (
 from .codex_backend import CodexBackend
 from .daemon import pid_alive, read_json, write_status
 from .github_gh import GHClient, GHError
-from .jobs import issue_run_dir, recent_jobs, utc_iso, write_job_record
+from .jobs import (
+    issue_run_dir,
+    load_job_record,
+    recent_jobs,
+    utc_iso,
+    write_job_record,
+)
 from .locking import lock_status
 from .prompt import build_issue_draft_prompt
 from .runner import (
@@ -1041,15 +1047,146 @@ def cmd_stop(args) -> int:
     return 0
 
 
+def _parse_utc_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _format_age(started_at: str | None) -> str:
+    started = _parse_utc_iso(started_at)
+    if started is None:
+        return ""
+    seconds = max(0, int((datetime.now(timezone.utc) - started).total_seconds()))
+    days, remainder = divmod(seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes = remainder // 60
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+
+def _display_path(path: str, root: Path) -> str:
+    candidate = Path(path)
+    try:
+        return str(candidate.resolve().relative_to(root.resolve()))
+    except ValueError:
+        return str(candidate)
+    except OSError:
+        return str(candidate)
+
+
+def _latest_artifact_name(run_dir: Path) -> str:
+    ignored = {
+        "artifacts.log",
+        "latest.json",
+        "prompt.md",
+        "codex.log",
+        "verify.log",
+        "review.md",
+        "summary.md",
+        "pr_body.md",
+        "parent-plan.json",
+        "parent-memory.md",
+    }
+    try:
+        files = [
+            path
+            for path in run_dir.iterdir()
+            if path.is_file() and path.name not in ignored
+        ]
+    except OSError:
+        return ""
+    if not files:
+        return ""
+    return max(files, key=lambda path: path.stat().st_mtime).name
+
+
+def _next_expected_for_phase(phase: str) -> str:
+    return {
+        "selected": "working label",
+        "working_label_added": "worktree",
+        "worktree_ready": "codex.log",
+        "codex_running": "codex.log",
+        "codex_finished": "verify.log",
+        "verifying": "verify.log",
+        "reviewing": "review.md",
+        "committing": "git commit",
+        "pushing": "git push",
+        "opening_pr": "draft PR",
+        "finalizing": "",
+    }.get(phase, "")
+
+
+def _normalized_lock_status(lock_text: str) -> str:
+    return "held" if lock_text == "held" else "free"
+
+
+def _active_job_diagnostics(
+    job, run_dir: Path, daemon_running: bool, run_once_lock: str
+) -> list[str]:
+    diagnostics: list[str] = []
+    if job.phase == "codex_finished":
+        diagnostics.append(
+            "Codex completed, verification has not started. This run may have been interrupted."
+        )
+    elif (
+        job.phase == "codex_running" and not daemon_running and run_once_lock == "free"
+    ):
+        diagnostics.append(
+            "Codex was running, but no daemon or run lock appears active. This run may have been interrupted."
+        )
+    if not daemon_running and run_once_lock == "free":
+        diagnostics.append("Job is marked working, but no worker appears active.")
+    if (run_dir / "codex.log").exists() and not (run_dir / "verify.log").exists():
+        diagnostics.append(
+            "codex.log exists and verify.log is missing, which points to interruption after Codex before verifier."
+        )
+    return diagnostics
+
+
+def _print_job_status_block(
+    label: str,
+    job,
+    paths: dict[str, Path],
+    root: Path,
+    diagnostics: list[str] | None = None,
+) -> None:
+    run_dir = issue_run_dir(paths["run_root"], job.issue_number)
+    print(f"{label}:")
+    print(f"  issue: #{job.issue_number} {job.issue_title}")
+    print(f"  status: {job.status}")
+    print(f"  phase: {job.phase}")
+    print(f"  age: {_format_age(job.started_at)}")
+    print(f"  worktree: {_display_path(job.worktree_path, root)}")
+    print(f"  latest_artifact: {_latest_artifact_name(run_dir)}")
+    next_expected = _next_expected_for_phase(job.phase)
+    if next_expected:
+        print(f"  next_expected: {next_expected}")
+    if diagnostics:
+        print(f"  diagnostic: {diagnostics[0]}")
+
+
 def cmd_status(args) -> int:
     try:
         config = _load(args.config)
     except ConfigError as exc:
         print(exc, file=sys.stderr)
         return 1
-    paths = _paths(config, Path.cwd())
+    root = Path.cwd()
+    paths = _paths(config, root)
     pid_file = paths["runtime_root"] / "worker.pid"
     status = read_json(paths["runtime_root"] / "worker.status.json")
+    raw_lock_status = lock_status(paths["runtime_root"] / "worker.lock")
+    run_once_lock = _normalized_lock_status(raw_lock_status)
     pid = None
     running = False
     if pid_file.exists():
@@ -1058,7 +1195,31 @@ def cmd_status(args) -> int:
             running = pid_alive(pid)
         except ValueError:
             running = False
-    print(f"running: {'yes' if running else 'no'}")
+    jobs = recent_jobs(paths["run_root"])
+    latest_job = jobs[0] if jobs else None
+    active_jobs = [
+        job for job in jobs if job.status == "working" and job.finished_at is None
+    ]
+    active_job = active_jobs[0] if active_jobs else None
+    active_run_dir = (
+        issue_run_dir(paths["run_root"], active_job.issue_number)
+        if active_job
+        else paths["run_root"]
+    )
+    diagnostics = (
+        _active_job_diagnostics(active_job, active_run_dir, running, run_once_lock)
+        if active_job
+        else []
+    )
+    open_working_issues = []
+    try:
+        open_working_issues = GHClient(config.repo).list_issues(
+            config.issue_selection.working_label
+        )
+    except GHError:
+        pass
+
+    print(f"daemon: {'running' if running else 'no'}")
     print(f"pid: {pid or status.get('pid') or ''}")
     print(f"started_at: {status.get('started_at') or ''}")
     print(f"last_run_at: {status.get('last_run_at') or ''}")
@@ -1066,6 +1227,25 @@ def cmd_status(args) -> int:
     print(
         f"log_file: {status.get('log_file') or str(paths['log_root'] / 'worker.log')}"
     )
+    print(f"run_once_lock: {run_once_lock}")
+    if latest_job:
+        _print_job_status_block("latest_job", latest_job, paths, root)
+    if active_job:
+        _print_job_status_block(
+            "active_or_stale_job", active_job, paths, root, diagnostics
+        )
+    print("open_ai_working_issues:")
+    if open_working_issues:
+        for issue in open_working_issues:
+            print(f"  #{issue.number}: {issue.title}")
+    else:
+        print("  none")
+    print("diagnostics:")
+    if diagnostics:
+        for diagnostic in diagnostics:
+            print(f"  - {diagnostic}")
+    else:
+        print("  none")
     return 0
 
 
@@ -1101,12 +1281,16 @@ def cmd_logs(args) -> int:
     return 0
 
 
-def cmd_retry(args) -> int:
+def cmd_enable(args) -> int:
     try:
         config = _load(args.config)
         gh = GHClient(config.repo)
-        gh.remove_label(args.issue, config.issue_selection.failed_label)
-        gh.add_label(args.issue, config.issue_selection.ready_label)
+        issue = gh.view_issue(args.issue)
+        labels = set(issue.labels)
+        if config.issue_selection.failed_label in labels:
+            gh.remove_label(args.issue, config.issue_selection.failed_label)
+        if config.issue_selection.ready_label not in labels:
+            gh.add_label(args.issue, config.issue_selection.ready_label)
     except (ConfigError, GHError) as exc:
         print(exc, file=sys.stderr)
         return 1
@@ -1115,7 +1299,161 @@ def cmd_retry(args) -> int:
             Path(args.config),
             overrides=RunOverrides(model=args.model, reasoning=args.reasoning),
         )
-    print(f"issue #{args.issue} marked ready")
+    print(f"issue #{args.issue} enabled")
+    return 0
+
+
+def cmd_disable(args) -> int:
+    try:
+        config = _load(args.config)
+        gh = GHClient(config.repo)
+        issue = gh.view_issue(args.issue)
+        labels = set(issue.labels)
+        for label in [
+            config.issue_selection.ready_label,
+            config.issue_selection.resume_label,
+        ]:
+            if label in labels:
+                gh.remove_label(args.issue, label)
+    except (ConfigError, GHError) as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    print(f"issue #{args.issue} disabled")
+    return 0
+
+
+def _issue_run_jobs(run_root: Path, issue_number: int):
+    run_dir = issue_run_dir(run_root, issue_number)
+    candidates = sorted(run_dir.glob("run-*.json"))
+    latest = run_dir / "latest.json"
+    if latest.exists():
+        candidates.append(latest)
+    records = []
+    seen_paths: set[Path] = set()
+    for path in candidates:
+        if path in seen_paths:
+            continue
+        seen_paths.add(path)
+        try:
+            record = load_job_record(path)
+        except (OSError, json.JSONDecodeError, TypeError):
+            continue
+        if record.issue_number == issue_number:
+            records.append(record)
+    return records
+
+
+def _unique_nonempty(values) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        unique.append(value)
+    return unique
+
+
+def _reset_lifecycle_labels(config) -> list[str]:
+    labels = config.issue_selection
+    return [
+        labels.working_label,
+        labels.failed_label,
+        labels.pr_opened_label,
+        labels.resume_label,
+        labels.parent_done_label,
+    ]
+
+
+def _delete_remote_branch_for_reset(branch: str) -> None:
+    try:
+        delete_remote_branch(branch)
+    except GitError as exc:
+        message = str(exc).lower()
+        missing = (
+            "remote ref does not exist",
+            "not found",
+            "unable to delete",
+            "does not exist",
+        )
+        if any(item in message for item in missing):
+            return
+        raise
+
+
+def _reset_delete_branch(branch: str, base_branch: str, repo_root: Path, dry_run: bool):
+    if dry_run:
+        print(f"would delete branch {branch}")
+        return
+    if current_branch(repo_root) == branch:
+        switch_branch(base_branch, repo_root)
+    _delete_remote_branch_for_reset(branch)
+    if local_branch_exists(branch):
+        delete_local_branch(branch, force=True)
+
+
+def cmd_reset(args) -> int:
+    try:
+        config = _load(args.config)
+        root = Path.cwd()
+        paths = _paths(config, root)
+        run_dir = issue_run_dir(paths["run_root"], args.issue)
+        jobs = _issue_run_jobs(paths["run_root"], args.issue)
+        gh = GHClient(config.repo)
+        issue = gh.view_issue(args.issue)
+
+        pr_urls = _unique_nonempty(job.pr_url for job in jobs)
+        branches = _unique_nonempty(job.branch_name for job in jobs)
+        worktrees = _unique_nonempty(
+            [
+                *(job.worktree_path for job in jobs),
+                str(paths["worktree_root"] / f"issue-{args.issue}"),
+            ]
+        )
+        base_branch = next(
+            (job.base_branch for job in jobs if job.base_branch), config.base_branch
+        )
+
+        for pr_url in pr_urls:
+            action = "would close" if args.dry_run else "closing"
+            print(f"{action} PR {pr_url}")
+            if not args.dry_run:
+                gh.close_pr(pr_url, delete_branch=True)
+
+        labels = set(issue.labels)
+        for label in _reset_lifecycle_labels(config):
+            if label not in labels:
+                continue
+            action = "would remove" if args.dry_run else "removing"
+            print(f"{action} label {label}")
+            if not args.dry_run:
+                gh.remove_label(args.issue, label)
+        if config.issue_selection.ready_label not in labels:
+            action = "would add" if args.dry_run else "adding"
+            print(f"{action} label {config.issue_selection.ready_label}")
+            if not args.dry_run:
+                gh.add_label(args.issue, config.issue_selection.ready_label)
+
+        for worktree_text in worktrees:
+            worktree = Path(worktree_text)
+            if not worktree.exists():
+                continue
+            action = "would remove" if args.dry_run else "removing"
+            print(f"{action} worktree {worktree}")
+            if not args.dry_run:
+                remove_worktree(worktree, force=True)
+
+        for branch in branches:
+            _reset_delete_branch(branch, base_branch, root, args.dry_run)
+
+        action = "would remove" if args.dry_run else "removing"
+        print(f"{action} run directory {run_dir}")
+        if not args.dry_run and run_dir.exists():
+            shutil.rmtree(run_dir)
+    except (ConfigError, GHError, GitError, OSError) as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    print(f"issue #{args.issue} reset")
     return 0
 
 
@@ -1344,7 +1682,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="a-dev")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    init = sub.add_parser("init")
+    init = sub.add_parser("init", help="bootstrap config, labels, and editor tasks")
     init.add_argument("--path", default=DEFAULT_CONFIG_PATH)
     init.add_argument("--force", action="store_true")
     init.add_argument(
@@ -1358,13 +1696,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     init.set_defaults(func=cmd_init)
 
-    run = sub.add_parser("run-once")
+    run = sub.add_parser("run-once", help="process one eligible issue or resume job")
     run.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     run.add_argument("--model")
     run.add_argument("--reasoning", choices=REASONING_EFFORTS)
     run.set_defaults(func=cmd_run_once)
 
-    list_cmd = sub.add_parser("list")
+    list_cmd = sub.add_parser("list", help="show candidate issues or pull requests")
     list_cmd.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     list_cmd.add_argument("--json", action="store_true")
     list_scope = list_cmd.add_mutually_exclusive_group()
@@ -1390,7 +1728,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     list_cmd.set_defaults(func=cmd_list)
 
-    create = sub.add_parser("create")
+    create = sub.add_parser("create", help="draft and open AI-ready GitHub issues")
     create.add_argument(
         "description",
         nargs="*",
@@ -1414,19 +1752,19 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--mode", choices=CREATE_MODES, default="auto")
     create.set_defaults(func=cmd_create)
 
-    inspect = sub.add_parser("inspect")
+    inspect = sub.add_parser("inspect", help="show local worker state and run records")
     inspect.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     inspect.add_argument("--issue", type=int)
     inspect.add_argument("--json", action="store_true")
     inspect.set_defaults(func=cmd_inspect)
 
-    kanban = sub.add_parser("kanban")
+    kanban = sub.add_parser("kanban", help="render an Obsidian-friendly run board")
     kanban.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     kanban.add_argument("--issue", type=int)
     kanban.add_argument("--output")
     kanban.set_defaults(func=cmd_kanban)
 
-    start = sub.add_parser("start")
+    start = sub.add_parser("start", help="start the background worker loop")
     start.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     start.add_argument(
         "--interval", dest="interval_minutes", type=parse_interval_minutes
@@ -1436,30 +1774,41 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--foreground", action="store_true")
     start.set_defaults(func=cmd_start)
 
-    stop = sub.add_parser("stop")
+    stop = sub.add_parser("stop", help="stop the background worker loop")
     stop.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     stop.set_defaults(func=cmd_stop)
 
-    status = sub.add_parser("status")
+    status = sub.add_parser("status", help="show background worker status")
     status.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     status.set_defaults(func=cmd_status)
 
-    logs = sub.add_parser("logs")
+    logs = sub.add_parser("logs", help="print background worker logs")
     logs.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     logs.add_argument("--tail", type=int, default=100)
     logs.add_argument("--follow", action="store_true")
     logs.add_argument("--issue", type=int)
     logs.set_defaults(func=cmd_logs)
 
-    retry = sub.add_parser("retry")
-    retry.add_argument("issue", type=int)
-    retry.add_argument("--config", default=DEFAULT_CONFIG_PATH)
-    retry.add_argument("--run-now", action="store_true")
-    retry.add_argument("--model")
-    retry.add_argument("--reasoning", choices=REASONING_EFFORTS)
-    retry.set_defaults(func=cmd_retry)
+    enable = sub.add_parser("enable", help="mark an issue ready for worker selection")
+    enable.add_argument("issue", type=int)
+    enable.add_argument("--config", default=DEFAULT_CONFIG_PATH)
+    enable.add_argument("--run-now", action="store_true")
+    enable.add_argument("--model")
+    enable.add_argument("--reasoning", choices=REASONING_EFFORTS)
+    enable.set_defaults(func=cmd_enable)
 
-    resume = sub.add_parser("resume")
+    disable = sub.add_parser("disable", help="remove worker queue labels from an issue")
+    disable.add_argument("issue", type=int)
+    disable.add_argument("--config", default=DEFAULT_CONFIG_PATH)
+    disable.set_defaults(func=cmd_disable)
+
+    reset = sub.add_parser("reset", help="clear an issue run and mark it ready again")
+    reset.add_argument("issue", type=int)
+    reset.add_argument("--config", default=DEFAULT_CONFIG_PATH)
+    reset.add_argument("--dry-run", action="store_true")
+    reset.set_defaults(func=cmd_reset)
+
+    resume = sub.add_parser("resume", help="continue work on an existing A-Dev PR")
     resume.add_argument("issue", type=int)
     resume.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     resume.add_argument("--queue", action="store_true")
@@ -1469,7 +1818,7 @@ def build_parser() -> argparse.ArgumentParser:
     resume.add_argument("--reasoning", choices=REASONING_EFFORTS)
     resume.set_defaults(func=cmd_resume)
 
-    merge = sub.add_parser("merge")
+    merge = sub.add_parser("merge", help="merge an A-Dev PR from local run state")
     merge.add_argument("issue", type=int)
     merge.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     merge.add_argument("--method", choices=MERGE_METHODS, default="merge")
@@ -1480,7 +1829,7 @@ def build_parser() -> argparse.ArgumentParser:
     merge.add_argument("--dry-run", action="store_true")
     merge.set_defaults(func=cmd_merge)
 
-    clean = sub.add_parser("clean")
+    clean = sub.add_parser("clean", help="remove old run directories and worktrees")
     clean.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     clean.add_argument("--issue", type=int)
     clean.add_argument("--failed", action="store_true")

@@ -35,6 +35,19 @@ def _diff() -> DiffSummary:
     return DiffSummary(["src/app.py"], " src/app.py | 2 +-", 2, False, None)
 
 
+def _job_record(worktree_path: Path) -> JobRecord:
+    return JobRecord(
+        issue_number=123,
+        issue_title="Bug title",
+        branch_name="ai/issue-123-bug-title",
+        worktree_path=str(worktree_path),
+        status="working",
+        phase="worktree_ready",
+        started_at="2026-01-01T00:00:00Z",
+        base_branch="main",
+    )
+
+
 class FakeDependencyGH:
     def __init__(self, blockers_by_issue: dict[int, list[Issue]]):
         self.blockers_by_issue = blockers_by_issue
@@ -126,6 +139,7 @@ def _write_pr_job(
             branch_name=branch_name,
             worktree_path=f"/tmp/issue-{issue_number}",
             status="pr_opened",
+            phase="finalizing",
             started_at="2026-01-01T00:00:00Z",
             base_branch="main",
             stack_depth=stack_depth,
@@ -337,6 +351,7 @@ def test_run_agent_review_fix_loop_until_clean(monkeypatch, tmp_path: Path):
         tmp_path,
         run_dir,
         "20260424",
+        _job_record(tmp_path),
     )
 
     assert ok is True
@@ -393,6 +408,7 @@ def test_run_agent_review_loop_stops_after_max_fix_iterations(
         tmp_path,
         run_dir,
         "20260424",
+        _job_record(tmp_path),
     )
 
     assert ok is False
@@ -438,6 +454,7 @@ def test_run_agent_fails_when_review_session_modifies_worktree(
         tmp_path,
         run_dir,
         "20260424",
+        _job_record(tmp_path),
     )
 
     assert ok is False
@@ -467,6 +484,7 @@ def test_process_issue_resume_reuses_existing_pr_and_includes_follow_up(
         branch_name="ai/issue-123-bug-title",
         worktree_path=str(worktree_path),
         status="pr_opened",
+        phase="finalizing",
         started_at="2026-01-01T00:00:00Z",
         finished_at="2026-01-01T00:10:00Z",
         base_branch="main",
@@ -629,6 +647,7 @@ def test_process_issue_resume_skips_stale_summary_after_failed_run(
         branch_name="ai/issue-123-bug-title",
         worktree_path=str(worktree_path),
         status="verify_failed",
+        phase="finalizing",
         started_at="2026-01-01T00:00:00Z",
         finished_at="2026-01-01T00:10:00Z",
         base_branch="main",

@@ -186,6 +186,37 @@ a-dev logs
 a-dev stop
 ```
 
+`a-dev status` includes daemon state, the worker lock, the latest job phase, any
+unfinished `working` job, open `ai-working` issues, and interruption diagnostics.
+
+Temporarily remove an issue from scheduler selection:
+
+```bash
+a-dev disable 123
+```
+
+Enable or re-enable an issue for worker selection. This adds `ai-ready` and
+removes `ai-failed`, replacing the old retry flow. It leaves blocked labels such
+as `blocked` and `needs-human` in place so dependency constraints remain
+separate:
+
+```bash
+a-dev enable 123
+```
+
+Reset an issue for a fresh worker run during debugging:
+
+```bash
+a-dev reset 123
+```
+
+`reset` closes recorded A-Dev PRs for the issue, asks GitHub to delete the PR
+branches, removes local worker worktrees and branches, removes the issue run
+directory, clears A-Dev lifecycle labels such as `ai-working`, `ai-failed`,
+`ai-pr-opened`, and `ai-resume`, then adds `ai-ready`. GitHub does not support
+deleting PR records, so reset closes them instead. Use `--dry-run` to preview
+the cleanup.
+
 Resume work on an existing A-Dev PR for a specific issue. The worker reuses the recorded branch/worktree for that issue, includes the latest local `summary.md` artifact plus new issue comments and PR review discussion since the last worker run, accepts an optional local operator note, and updates the existing PR instead of opening a new one:
 
 ```bash

@@ -110,6 +110,7 @@ class JobRecord:
     branch_name: str
     worktree_path: str
     status: str
+    phase: str
     started_at: str
     base_branch: str | None = None
     stack_depth: int = 0
@@ -125,6 +126,10 @@ class JobRecord:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "JobRecord":
+        data.setdefault(
+            "phase",
+            "finalizing" if data.get("finished_at") else data.get("status", "selected"),
+        )
         return cls(**data)
 
 

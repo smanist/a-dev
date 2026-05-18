@@ -423,6 +423,19 @@ class GHClient:
             ]
         )
 
+    def close_pr(self, pr_url: str, delete_branch: bool = False) -> None:
+        args = [
+            "gh",
+            "pr",
+            "close",
+            pr_url,
+            "--repo",
+            self.repo,
+        ]
+        if delete_branch:
+            args.append("--delete-branch")
+        self._run(args)
+
     def merge_pr(
         self,
         pr_url: str,
