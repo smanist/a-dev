@@ -1134,7 +1134,14 @@ def _active_job_diagnostics(
     job, run_dir: Path, daemon_running: bool, run_once_lock: str
 ) -> list[str]:
     diagnostics: list[str] = []
-    if job.phase == "codex_finished":
+    run_lock_held = run_once_lock == "held"
+    codex_log_exists = (run_dir / "codex.log").exists()
+    verify_log_missing = not (run_dir / "verify.log").exists()
+    if job.phase == "codex_finished" and run_lock_held:
+        diagnostics.append(
+            "Codex completed and the worker lock is still held; verification should start next."
+        )
+    elif job.phase == "codex_finished":
         diagnostics.append(
             "Codex completed, verification has not started. This run may have been interrupted."
         )
@@ -1146,7 +1153,21 @@ def _active_job_diagnostics(
         )
     if not daemon_running and run_once_lock == "free":
         diagnostics.append("Job is marked working, but no worker appears active.")
-    if (run_dir / "codex.log").exists() and not (run_dir / "verify.log").exists():
+    if codex_log_exists and verify_log_missing and job.phase == "verifying":
+        if run_lock_held:
+            diagnostics.append(
+                "Verifier appears active; verify.log will be written when verifier commands finish."
+            )
+        else:
+            diagnostics.append(
+                "Verifier was running, but no run lock appears active; verify.log is missing, so the run may have been interrupted during verification."
+            )
+    elif (
+        codex_log_exists
+        and verify_log_missing
+        and job.phase == "codex_finished"
+        and not run_lock_held
+    ):
         diagnostics.append(
             "codex.log exists and verify.log is missing, which points to interruption after Codex before verifier."
         )

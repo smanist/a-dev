@@ -733,6 +733,115 @@ def test_status_json_reports_active_job_phase_and_diagnostic(
     )
 
 
+def test_status_reports_active_verifier_when_verify_log_missing(
+    tmp_path: Path, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".a-dev.yaml").write_text("repo: owner/repo\n", encoding="utf-8")
+    run_dir = tmp_path / ".a-dev" / "runs" / "issue-87"
+    run_dir.mkdir(parents=True)
+    (run_dir / "codex.log").write_text("done\n", encoding="utf-8")
+    (run_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "issue_number": 87,
+                "issue_title": "Add a scripts guide",
+                "branch_name": "ai/issue-87-add-a-scripts-guide",
+                "worktree_path": str(tmp_path / ".a-dev" / "worktrees" / "issue-87"),
+                "status": "working",
+                "phase": "verifying",
+                "started_at": "2026-05-17T18:00:00Z",
+                "base_branch": "main",
+                "stack_depth": 0,
+                "blocker_issue_numbers": [],
+                "finished_at": None,
+                "pr_url": None,
+                "error_summary": None,
+                "changed_files": [],
+                "verifier_passed": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class StatusGH:
+        def __init__(self, repo: str):
+            self.repo = repo
+
+        def list_issues(self, labels):
+            return [Issue(87, "Add a scripts guide", "", ["ai-working"], "open")]
+
+    monkeypatch.setattr(cli, "GHClient", StatusGH)
+    monkeypatch.setattr(cli, "lock_status", lambda path: "held")
+
+    assert cli.main(["status", "--json"]) == 0
+
+    data = json.loads(capsys.readouterr().out)
+    assert data["run_once_lock"] == "held"
+    assert data["latest_job"]["phase"] == "verifying"
+    assert any(
+        "Verifier appears active" in diagnostic for diagnostic in data["diagnostics"]
+    )
+    assert not any(
+        "interruption after Codex before verifier" in diagnostic
+        for diagnostic in data["diagnostics"]
+    )
+
+
+def test_status_reports_interrupted_verifier_when_lock_free_and_verify_log_missing(
+    tmp_path: Path, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".a-dev.yaml").write_text("repo: owner/repo\n", encoding="utf-8")
+    run_dir = tmp_path / ".a-dev" / "runs" / "issue-87"
+    run_dir.mkdir(parents=True)
+    (run_dir / "codex.log").write_text("done\n", encoding="utf-8")
+    (run_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "issue_number": 87,
+                "issue_title": "Add a scripts guide",
+                "branch_name": "ai/issue-87-add-a-scripts-guide",
+                "worktree_path": str(tmp_path / ".a-dev" / "worktrees" / "issue-87"),
+                "status": "working",
+                "phase": "verifying",
+                "started_at": "2026-05-17T18:00:00Z",
+                "base_branch": "main",
+                "stack_depth": 0,
+                "blocker_issue_numbers": [],
+                "finished_at": None,
+                "pr_url": None,
+                "error_summary": None,
+                "changed_files": [],
+                "verifier_passed": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class StatusGH:
+        def __init__(self, repo: str):
+            self.repo = repo
+
+        def list_issues(self, labels):
+            return [Issue(87, "Add a scripts guide", "", ["ai-working"], "open")]
+
+    monkeypatch.setattr(cli, "GHClient", StatusGH)
+
+    assert cli.main(["status", "--json"]) == 0
+
+    data = json.loads(capsys.readouterr().out)
+    assert data["run_once_lock"] == "free"
+    assert any(
+        "interrupted during verification" in diagnostic
+        for diagnostic in data["diagnostics"]
+    )
+    assert not any(
+        "interruption after Codex before verifier" in diagnostic
+        for diagnostic in data["diagnostics"]
+    )
+
+
 def test_merge_uses_recorded_pr_and_deletes_branch(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".a-dev.yaml").write_text("repo: owner/repo\n", encoding="utf-8")
