@@ -79,6 +79,8 @@ a-dev stop
 daemon is running, whether the worker lock is held, the latest local job record,
 any unfinished `working` job, open `ai-working` issues, and diagnostics for
 common interrupted states such as Codex finishing before verification starts.
+Use `a-dev status --json` when another scheduler needs the same state in a
+machine-readable form.
 
 Inspect local worker state:
 

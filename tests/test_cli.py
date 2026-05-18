@@ -663,7 +663,7 @@ def test_status_reports_active_job_phase_and_diagnostic(
     assert cli.main(["status"]) == 0
 
     output = capsys.readouterr().out
-    assert "daemon: no" in output
+    assert "daemon: stopped" in output
     assert "run_once_lock: free" in output
     assert "active_or_stale_job:" in output
     assert "issue: #87 Add a scripts guide" in output
@@ -672,6 +672,65 @@ def test_status_reports_active_job_phase_and_diagnostic(
     assert "next_expected: verify.log" in output
     assert "Codex completed, verification has not started" in output
     assert "#87: Add a scripts guide" in output
+
+
+def test_status_json_reports_active_job_phase_and_diagnostic(
+    tmp_path: Path, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".a-dev.yaml").write_text("repo: owner/repo\n", encoding="utf-8")
+    run_dir = tmp_path / ".a-dev" / "runs" / "issue-87"
+    run_dir.mkdir(parents=True)
+    (run_dir / "codex-20260517-182637.log").write_text("done\n", encoding="utf-8")
+    (run_dir / "codex.log").write_text("done\n", encoding="utf-8")
+    (run_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "issue_number": 87,
+                "issue_title": "Add a scripts guide",
+                "branch_name": "ai/issue-87-add-a-scripts-guide",
+                "worktree_path": str(tmp_path / ".a-dev" / "worktrees" / "issue-87"),
+                "status": "working",
+                "phase": "codex_finished",
+                "started_at": "2026-05-17T18:00:00Z",
+                "base_branch": "main",
+                "stack_depth": 0,
+                "blocker_issue_numbers": [],
+                "finished_at": None,
+                "pr_url": None,
+                "error_summary": None,
+                "changed_files": [],
+                "verifier_passed": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class StatusGH:
+        def __init__(self, repo: str):
+            self.repo = repo
+
+        def list_issues(self, labels):
+            return [Issue(87, "Add a scripts guide", "", ["ai-working"], "open")]
+
+    monkeypatch.setattr(cli, "GHClient", StatusGH)
+
+    assert cli.main(["status", "--json"]) == 0
+
+    data = json.loads(capsys.readouterr().out)
+    assert data["daemon"]["running"] is False
+    assert data["daemon"]["state"] == "stopped"
+    assert data["run_once_lock"] == "free"
+    assert data["latest_job"]["issue_number"] == 87
+    assert data["latest_job"]["phase"] == "codex_finished"
+    assert data["active_or_stale_job"]["status"] == "working"
+    assert data["active_or_stale_job"]["next_expected"] == "verify.log"
+    assert data["open_ai_working_issues"][0]["number"] == 87
+    assert data["open_ai_working_issues_error"] is None
+    assert any(
+        "Codex completed, verification has not started" in diagnostic
+        for diagnostic in data["diagnostics"]
+    )
 
 
 def test_merge_uses_recorded_pr_and_deletes_branch(tmp_path: Path, monkeypatch, capsys):

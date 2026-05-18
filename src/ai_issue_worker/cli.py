@@ -1153,35 +1153,30 @@ def _active_job_diagnostics(
     return diagnostics
 
 
-def _print_job_status_block(
-    label: str,
-    job,
-    paths: dict[str, Path],
-    root: Path,
-    diagnostics: list[str] | None = None,
-) -> None:
+def _job_status_data(job, paths: dict[str, Path], root: Path) -> dict[str, Any]:
     run_dir = issue_run_dir(paths["run_root"], job.issue_number)
-    print(f"{label}:")
-    print(f"  issue: #{job.issue_number} {job.issue_title}")
-    print(f"  status: {job.status}")
-    print(f"  phase: {job.phase}")
-    print(f"  age: {_format_age(job.started_at)}")
-    print(f"  worktree: {_display_path(job.worktree_path, root)}")
-    print(f"  latest_artifact: {_latest_artifact_name(run_dir)}")
     next_expected = _next_expected_for_phase(job.phase)
-    if next_expected:
-        print(f"  next_expected: {next_expected}")
-    if diagnostics:
-        print(f"  diagnostic: {diagnostics[0]}")
+    return {
+        "issue_number": job.issue_number,
+        "issue_title": job.issue_title,
+        "branch_name": job.branch_name,
+        "worktree": _display_path(job.worktree_path, root),
+        "worktree_path": job.worktree_path,
+        "status": job.status,
+        "phase": job.phase,
+        "age": _format_age(job.started_at),
+        "started_at": job.started_at,
+        "finished_at": job.finished_at,
+        "latest_artifact": _latest_artifact_name(run_dir),
+        "next_expected": next_expected or None,
+        "pr_url": job.pr_url,
+        "error_summary": job.error_summary,
+        "changed_files": job.changed_files,
+        "verifier_passed": job.verifier_passed,
+    }
 
 
-def cmd_status(args) -> int:
-    try:
-        config = _load(args.config)
-    except ConfigError as exc:
-        print(exc, file=sys.stderr)
-        return 1
-    root = Path.cwd()
+def _status_data(config, root: Path) -> dict[str, Any]:
     paths = _paths(config, root)
     pid_file = paths["runtime_root"] / "worker.pid"
     status = read_json(paths["runtime_root"] / "worker.status.json")
@@ -1195,6 +1190,7 @@ def cmd_status(args) -> int:
             running = pid_alive(pid)
         except ValueError:
             running = False
+
     jobs = recent_jobs(paths["run_root"])
     latest_job = jobs[0] if jobs else None
     active_jobs = [
@@ -1212,40 +1208,95 @@ def cmd_status(args) -> int:
         else []
     )
     open_working_issues = []
+    open_working_issues_error = None
     try:
         open_working_issues = GHClient(config.repo).list_issues(
             config.issue_selection.working_label
         )
-    except GHError:
-        pass
+    except GHError as exc:
+        open_working_issues_error = str(exc)
 
-    print(f"daemon: {'running' if running else 'no'}")
-    print(f"pid: {pid or status.get('pid') or ''}")
-    print(f"started_at: {status.get('started_at') or ''}")
-    print(f"last_run_at: {status.get('last_run_at') or ''}")
-    print(f"last_status: {status.get('last_status') or ''}")
-    print(
-        f"log_file: {status.get('log_file') or str(paths['log_root'] / 'worker.log')}"
-    )
-    print(f"run_once_lock: {run_once_lock}")
-    if latest_job:
-        _print_job_status_block("latest_job", latest_job, paths, root)
-    if active_job:
-        _print_job_status_block(
-            "active_or_stale_job", active_job, paths, root, diagnostics
+    return {
+        "daemon": {
+            "running": running,
+            "state": "running" if running else "stopped",
+            "pid": pid or status.get("pid"),
+            "started_at": status.get("started_at"),
+            "last_run_at": status.get("last_run_at"),
+            "last_status": status.get("last_status"),
+            "log_file": status.get("log_file") or str(paths["log_root"] / "worker.log"),
+        },
+        "run_once_lock": run_once_lock,
+        "run_once_lock_raw": raw_lock_status,
+        "latest_job": _job_status_data(latest_job, paths, root) if latest_job else None,
+        "active_or_stale_job": (
+            _job_status_data(active_job, paths, root) if active_job else None
+        ),
+        "open_ai_working_issues": [issue.__dict__ for issue in open_working_issues],
+        "open_ai_working_issues_error": open_working_issues_error,
+        "diagnostics": diagnostics,
+    }
+
+
+def _print_status_data(data: dict[str, Any]) -> None:
+    daemon = data["daemon"]
+    print(f"daemon: {daemon['state']}")
+    print(f"pid: {daemon['pid'] or ''}")
+    print(f"started_at: {daemon['started_at'] or ''}")
+    print(f"last_run_at: {daemon['last_run_at'] or ''}")
+    print(f"last_status: {daemon['last_status'] or ''}")
+    print(f"log_file: {daemon['log_file']}")
+    print(f"run_once_lock: {data['run_once_lock']}")
+    if data["latest_job"]:
+        _print_status_job_data("latest_job", data["latest_job"])
+    if data["active_or_stale_job"]:
+        _print_status_job_data(
+            "active_or_stale_job",
+            data["active_or_stale_job"],
+            data["diagnostics"],
         )
     print("open_ai_working_issues:")
-    if open_working_issues:
-        for issue in open_working_issues:
-            print(f"  #{issue.number}: {issue.title}")
+    if data["open_ai_working_issues"]:
+        for issue in data["open_ai_working_issues"]:
+            print(f"  #{issue['number']}: {issue['title']}")
     else:
         print("  none")
     print("diagnostics:")
-    if diagnostics:
-        for diagnostic in diagnostics:
+    if data["diagnostics"]:
+        for diagnostic in data["diagnostics"]:
             print(f"  - {diagnostic}")
     else:
         print("  none")
+
+
+def _print_status_job_data(
+    label: str, job: dict[str, Any], diagnostics: list[str] | None = None
+) -> None:
+    print(f"{label}:")
+    print(f"  issue: #{job['issue_number']} {job['issue_title']}")
+    print(f"  status: {job['status']}")
+    print(f"  phase: {job['phase']}")
+    print(f"  age: {job['age']}")
+    print(f"  worktree: {job['worktree']}")
+    print(f"  latest_artifact: {job['latest_artifact']}")
+    if job["next_expected"]:
+        print(f"  next_expected: {job['next_expected']}")
+    if diagnostics:
+        print(f"  diagnostic: {diagnostics[0]}")
+
+
+def cmd_status(args) -> int:
+    try:
+        config = _load(args.config)
+    except ConfigError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    root = Path.cwd()
+    data = _status_data(config, root)
+    if args.json:
+        print(json.dumps(data, indent=2, sort_keys=True))
+    else:
+        _print_status_data(data)
     return 0
 
 
@@ -1780,6 +1831,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     status = sub.add_parser("status", help="show background worker status")
     status.add_argument("--config", default=DEFAULT_CONFIG_PATH)
+    status.add_argument("--json", action="store_true")
     status.set_defaults(func=cmd_status)
 
     logs = sub.add_parser("logs", help="print background worker logs")

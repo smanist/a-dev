@@ -188,6 +188,7 @@ a-dev stop
 
 `a-dev status` includes daemon state, the worker lock, the latest job phase, any
 unfinished `working` job, open `ai-working` issues, and interruption diagnostics.
+Pass `--json` for scheduler-friendly machine-readable output.
 
 Temporarily remove an issue from scheduler selection:
 
