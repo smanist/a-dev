@@ -201,7 +201,7 @@ class GHClient:
                 "-X",
                 "POST",
                 f"{repo_path}/issues/{parent_number}/sub_issues",
-                "-f",
+                "-F",
                 f"sub_issue_id={child_issue_id}",
             ]
         )
@@ -216,7 +216,7 @@ class GHClient:
                 "-X",
                 "POST",
                 f"{repo_path}/issues/{issue_number}/dependencies/blocked_by",
-                "-f",
+                "-F",
                 f"issue_id={blocking_issue_id}",
             ]
         )

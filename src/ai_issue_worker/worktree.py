@@ -251,6 +251,12 @@ def changed_files(worktree_path: Path) -> list[str]:
     return files
 
 
+def intent_to_add_untracked(worktree_path: Path) -> None:
+    result = run_cmd(["git", "add", "--intent-to-add", "."], cwd=worktree_path)
+    if result.exit_code != 0:
+        raise GitError(result.stderr.strip() or "git add --intent-to-add failed")
+
+
 def commit_all(worktree_path: Path, message: str) -> None:
     add = run_cmd(["git", "add", "."], cwd=worktree_path)
     if add.exit_code != 0:

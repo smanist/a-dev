@@ -46,6 +46,7 @@ from .worktree import (
     add_worktree,
     commit_all,
     ensure_worktree,
+    intent_to_add_untracked,
     push_branch,
     remove_worktree,
     unique_branch_name,
@@ -663,6 +664,17 @@ def _run_review_loop(
     while True:
         review_iteration += 1
         review_stamp = f"{stamp}-review-{review_iteration}"
+        try:
+            intent_to_add_untracked(worktree_path)
+        except GitError as exc:
+            return (
+                False,
+                verify,
+                diff,
+                f"Preparing review diff failed:\n\n{exc}",
+                "agent",
+            )
+        diff = inspect_diff(worktree_path, config.diff_policy)
         review_prompt = build_review_prompt(issue, config, repo_root, diff, verify)
         review_prompt_path = run_dir / f"prompt-{review_stamp}.md"
         write_text_artifact(review_prompt_path, run_dir / "prompt.md", review_prompt)

@@ -130,6 +130,11 @@ The worker has two distinct Codex roles:
 - Implementation sessions are allowed to edit files.
 - Review sessions must be read-only and are validated by comparing `_diff_snapshot()` before and after the review run.
 
+Before each review attempt, the worker runs `git add --intent-to-add .` in the
+worktree and refreshes the diff summary. This keeps new untracked files visible
+to `git diff HEAD`, review prompts, and diff stats without staging their content
+for commit; the final `commit_all()` step still performs the real `git add .`.
+
 If the review output reports configured blocking priorities, the worker runs a separate fix session, then re-runs verification and review. The loop stops when:
 
 - review is clean,

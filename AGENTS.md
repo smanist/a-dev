@@ -48,6 +48,7 @@ The repo is intentionally small. Most behavior lives in `src/ai_issue_worker/run
 
 - `runner.py` owns lifecycle and exit-code decisions. Keep failure labeling, cleanup, and job-record updates coherent.
 - Review runs must not edit the worktree. `_diff_snapshot()` is the enforcement mechanism.
+- Before review runs, untracked files are marked with git intent-to-add so review prompts and diff stats include new file contents without committing them.
 - The outer worker commits and pushes. Prompts explicitly instruct the inner Codex session not to do that.
 - Resume runs for existing PRs must update the existing PR and recorded branch/worktree instead of silently opening a second PR.
 - Queued resume runs are selected via the `ai-resume` label and should stay distinct from fresh `ai-ready` issue work.

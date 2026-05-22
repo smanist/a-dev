@@ -154,9 +154,11 @@ review:
 
 When review is enabled, the worker runs a separate Codex code-review session after
 the initial implementation and verifier pass. The review command defaults to a
-read-only Codex sandbox. If that review reports configured blocking priorities,
-the worker runs a separate Codex fix session, verifies again, and repeats until
-the review is clean or `review.max_iterations` fix passes have been used.
+read-only Codex sandbox. Before each review pass, the worker marks untracked
+files with git intent-to-add so review diffs include new file contents. If that
+review reports configured blocking priorities, the worker runs a separate Codex
+fix session, verifies again, and repeats until the review is clean or
+`review.max_iterations` fix passes have been used.
 
 Each issue run directory also contains `artifacts.log`, a timestamped manifest of
 generated run artifacts such as prompts, Codex logs, verifier logs, review files,

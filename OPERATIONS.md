@@ -214,6 +214,7 @@ For daemon state:
 ## Behavioral Notes
 
 - Review is a second-pass gate, not a formatter. It should report findings without editing files.
+- Before each review pass, untracked files are marked with git intent-to-add so review sees new file contents in `git diff HEAD`; final commit staging still happens later.
 - Stacked PRs are only considered when dependency checking is enabled, there is exactly one open blocker, and that blocker already has a recorded `pr_opened` job.
 - Parent issues carry `ai-parent` and orchestrate `ai-child` sub-issues. Children remain the code-producing PR units.
 - Parent runs process children serially up to `issue_selection.max_parent_children_per_run` and leave the parent `ai-ready` if blocked or only partially drained.

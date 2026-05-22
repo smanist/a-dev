@@ -48,6 +48,12 @@ def _job_record(worktree_path: Path) -> JobRecord:
     )
 
 
+def _mock_intent_to_add(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "ai_issue_worker.runner.intent_to_add_untracked", lambda worktree_path: None
+    )
+
+
 class FakeDependencyGH:
     def __init__(self, blockers_by_issue: dict[int, list[Issue]]):
         self.blockers_by_issue = blockers_by_issue
@@ -343,6 +349,7 @@ def test_run_agent_review_fix_loop_until_clean(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(
         "ai_issue_worker.runner.inspect_diff", lambda worktree_path, config: _diff()
     )
+    _mock_intent_to_add(monkeypatch)
 
     ok, verify, diff, error, failure_kind = _run_agent_and_verify(
         config,
@@ -367,6 +374,88 @@ def test_run_agent_review_fix_loop_until_clean(monkeypatch, tmp_path: Path):
     ]
     assert commands == [None, config.review.command, None, config.review.command]
     assert verify_count == 2
+
+
+def test_review_prompt_includes_intent_to_add_untracked_files(
+    monkeypatch, tmp_path: Path
+):
+    config = config_from_dict(
+        {"repo": "owner/repo", "verify": {"commands": ["pytest"]}}
+    )
+    worktree = tmp_path / "worktree"
+    run_dir = tmp_path / "run"
+    worktree.mkdir()
+    run_dir.mkdir()
+    subprocess.run(["git", "init"], cwd=worktree, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=worktree,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test User"],
+        cwd=worktree,
+        check=True,
+        capture_output=True,
+    )
+    (worktree / "README.md").write_text("initial\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "README.md"], cwd=worktree, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "init"],
+        cwd=worktree,
+        check=True,
+        capture_output=True,
+    )
+    review_prompts: list[str] = []
+
+    def fake_codex(config, worktree_path, prompt_path, log_path, command=None):
+        prompt = prompt_path.read_text(encoding="utf-8")
+        log_path.write_text("log", encoding="utf-8")
+        if prompt.startswith("# Task"):
+            (worktree_path / "new.txt").write_text("created\n", encoding="utf-8")
+            return AgentResult(True, 0, "implementation complete", "", 0.1, False)
+        if prompt.startswith("# Code review task"):
+            review_prompts.append(prompt)
+            status = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=worktree_path,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+            assert " A new.txt" in status
+            return AgentResult(
+                True, 0, "BLOCKING_PRIORITIES: NONE\n\nNo findings.", "", 0.1, False
+            )
+        raise AssertionError(f"unexpected prompt: {prompt.splitlines()[0]}")
+
+    def fake_verifier(config, worktree_path, log_path):
+        log_path.write_text("PASS pytest", encoding="utf-8")
+        return VerifyResult(True, [CommandResult("pytest", 0, "ok", "", 0.1)])
+
+    monkeypatch.setattr("ai_issue_worker.runner._run_codex_session", fake_codex)
+    monkeypatch.setattr("ai_issue_worker.runner.run_verifier", fake_verifier)
+
+    ok, verify, diff, error, failure_kind = _run_agent_and_verify(
+        config,
+        _issue(),
+        worktree,
+        worktree,
+        run_dir,
+        "20260424",
+        _job_record(worktree),
+    )
+
+    assert ok is True
+    assert verify and verify.passed is True
+    assert diff.changed_files == ["new.txt"]
+    assert "new.txt | 1 +" in diff.diff_stat
+    assert "new.txt | 1 +" in review_prompts[0]
+    assert error == ""
+    assert failure_kind == ""
 
 
 def test_run_agent_review_loop_stops_after_max_fix_iterations(
@@ -400,6 +489,7 @@ def test_run_agent_review_loop_stops_after_max_fix_iterations(
     monkeypatch.setattr(
         "ai_issue_worker.runner.inspect_diff", lambda worktree_path, config: _diff()
     )
+    _mock_intent_to_add(monkeypatch)
 
     ok, verify, diff, error, failure_kind = _run_agent_and_verify(
         config,
@@ -446,6 +536,7 @@ def test_run_agent_fails_when_review_session_modifies_worktree(
     monkeypatch.setattr(
         "ai_issue_worker.runner.inspect_diff", lambda worktree_path, config: _diff()
     )
+    _mock_intent_to_add(monkeypatch)
 
     ok, verify, diff, error, failure_kind = _run_agent_and_verify(
         config,
@@ -585,6 +676,7 @@ def test_process_issue_resume_reuses_existing_pr_and_includes_follow_up(
     monkeypatch.setattr(
         "ai_issue_worker.runner.inspect_diff", lambda worktree_path, config: _diff()
     )
+    _mock_intent_to_add(monkeypatch)
     monkeypatch.setattr("ai_issue_worker.runner.ensure_worktree", fake_ensure_worktree)
     monkeypatch.setattr(
         "ai_issue_worker.runner.commit_all", lambda worktree_path, message: None
@@ -707,6 +799,7 @@ def test_process_issue_resume_skips_stale_summary_after_failed_run(
     monkeypatch.setattr(
         "ai_issue_worker.runner.inspect_diff", lambda worktree_path, config: _diff()
     )
+    _mock_intent_to_add(monkeypatch)
     monkeypatch.setattr(
         "ai_issue_worker.runner.ensure_worktree", lambda path, branch: None
     )
@@ -801,6 +894,7 @@ def test_process_issue_writes_summary_for_future_resume(monkeypatch, tmp_path: P
     monkeypatch.setattr(
         "ai_issue_worker.runner.inspect_diff", lambda worktree_path, config: _diff()
     )
+    _mock_intent_to_add(monkeypatch)
     monkeypatch.setattr(
         "ai_issue_worker.runner.commit_all", lambda worktree_path, message: None
     )

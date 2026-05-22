@@ -214,7 +214,7 @@ def test_add_sub_issue_and_dependency_use_rest_ids(monkeypatch):
             "-X",
             "POST",
             "repos/owner/repo/issues/10/sub_issues",
-            "-f",
+            "-F",
             "sub_issue_id=1001",
         ],
         [
@@ -225,7 +225,7 @@ def test_add_sub_issue_and_dependency_use_rest_ids(monkeypatch):
             "-X",
             "POST",
             "repos/owner/repo/issues/11/dependencies/blocked_by",
-            "-f",
+            "-F",
             "issue_id=1002",
         ],
     ]
