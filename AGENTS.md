@@ -22,7 +22,7 @@ The repo is intentionally small. Most behavior lives in `src/ai_issue_worker/run
 ## High-Signal Files
 
 - `src/ai_issue_worker/runner.py`: orchestration for one issue run, including verification, review, diff checks, commit/push, and PR creation.
-- `src/ai_issue_worker/cli.py`: user-facing commands such as `init`, `list`, `create`, `run-once`, `start`, `inspect`, `kanban`, `enable`, `disable`, `reset`, `resume`, `merge`, and `clean`.
+- `src/ai_issue_worker/cli.py`: user-facing commands such as `init`, `list`, `create`, `run-once`, `start`, `inspect`, `kanban`, `enable`, `disable`, `reset`, `resume`, `checkout`, `merge`, and `clean`.
 - `src/ai_issue_worker/config.py`: config schema, defaults, and validation.
 - `src/ai_issue_worker/prompt.py`: prompts sent to Codex. This is where repo instructions are assembled.
 - `src/ai_issue_worker/worktree.py`: git safety checks, branch naming, worktree creation/removal, commit, and push.
@@ -39,6 +39,7 @@ The repo is intentionally small. Most behavior lives in `src/ai_issue_worker/run
 - The worker uses filesystem artifacts as its audit trail. Each issue gets a run directory under `.a-dev/runs/issue-<n>/`.
 - Successful PR open/update flows also write a local `summary.md` artifact for future resume runs.
 - Parent runs write `parent-plan.json` and `parent-memory.md` in the parent run directory to carry durable context across child Codex sessions.
+- Blocked parent runs remove `ai-ready` and use parent-state labels such as `ai-parent-blocked` or `ai-parent-waiting` so the worker does not repeatedly select parents with no runnable children.
 - `latest.json`, `prompt.md`, `verify.log`, `review.md`, `summary.md`, `pr_body.md`, and `codex.log` are convenience pointers to the newest timestamped artifacts.
 - `latest.json` records include both coarse `status` and fine-grained `phase`; `a-dev status` uses them to surface active or stale jobs and interruption diagnostics.
 - `a-dev kanban` writes `.a-dev/kanban.md`, an Obsidian-friendly task board generated from latest issue run artifacts.
@@ -55,6 +56,7 @@ The repo is intentionally small. Most behavior lives in `src/ai_issue_worker/run
 - PR merging is explicit operator finalization through `a-dev merge`, not part of the unattended worker loop.
 - Parent issues are orchestration-only; child issues are the code-producing PR units.
 - Parent runs process children serially and must respect the existing stacked PR settings for open blockers.
+- Child failures should not fail the parent while independent runnable children remain.
 - GitHub comments, issue bodies, and PR bodies must be sanitized before leaving the machine.
 - Diff policy is enforced after implementation and review loops succeed. Do not bypass it accidentally.
 - `allow_dirty_base` only tolerates worker-owned runtime paths unless explicitly configured otherwise.

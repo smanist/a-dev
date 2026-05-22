@@ -38,6 +38,8 @@ class IssueSelectionConfig:
     parent_label: str = "ai-parent"
     child_label: str = "ai-child"
     parent_done_label: str = "ai-parent-done"
+    parent_blocked_label: str = "ai-parent-blocked"
+    parent_waiting_label: str = "ai-parent-waiting"
     blocked_labels: list[str] = field(
         default_factory=lambda: ["blocked", "needs-human"]
     )

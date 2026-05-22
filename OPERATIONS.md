@@ -135,6 +135,17 @@ Queue an existing A-Dev PR for the normal scheduler to pick up later:
 a-dev resume <issue-number> --queue --comment "Address the latest review feedback."
 ```
 
+Check out an issue's active A-Dev PR branch from local run state:
+
+```bash
+a-dev checkout <issue-number>
+```
+
+`checkout` is a no-op when the latest local run has no active PR. Failed runs
+are called out explicitly, including the recorded failure summary when
+available. If the worker worktree still exists, the command prints that path
+instead of switching the current checkout.
+
 Merge an A-Dev PR after local review, manual commits, and push:
 
 ```bash
@@ -192,6 +203,7 @@ For a parent issue run:
 1. Open `.a-dev/runs/issue-<parent>/parent-plan.json` for the current sub-issue DAG snapshot.
 2. Read `.a-dev/runs/issue-<parent>/parent-memory.md` for accumulated child PR summaries and decisions.
 3. Inspect each child issue directory for its normal `latest.json`, `summary.md`, `verify.log`, and PR body.
+4. If the parent has `ai-parent-blocked`, merge or close the child issues listed as blockers; `a-dev merge` will re-add `ai-ready` when another child becomes runnable.
 
 For daemon state:
 
@@ -217,7 +229,8 @@ For daemon state:
 - Before each review pass, untracked files are marked with git intent-to-add so review sees new file contents in `git diff HEAD`; final commit staging still happens later.
 - Stacked PRs are only considered when dependency checking is enabled, there is exactly one open blocker, and that blocker already has a recorded `pr_opened` job.
 - Parent issues carry `ai-parent` and orchestrate `ai-child` sub-issues. Children remain the code-producing PR units.
-- Parent runs process children serially up to `issue_selection.max_parent_children_per_run` and leave the parent `ai-ready` if blocked or only partially drained.
+- Parent runs process children serially up to `issue_selection.max_parent_children_per_run`; blocked parents lose `ai-ready` and gain `ai-parent-blocked`, while cap-limited parents stay ready for a later run.
+- A failed child does not immediately fail its parent if other child issues can still run; the parent is labeled `ai-failed` only when child failures leave no runnable work.
 - `merge` is an explicit operator action, not part of the daemon loop. It assumes CI/verifier confidence was established locally before the command is run.
 - `reset` is a destructive debugging action for rerunning an issue from scratch. It removes local run state and closes recorded PRs instead of preserving resume context.
 - `clean --delete-local-branches` deletes local branches with `git branch -D`; use it deliberately.

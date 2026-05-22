@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from ai_issue_worker import cli
-from ai_issue_worker.config import load_config
+from ai_issue_worker.config import config_from_dict, load_config
 from ai_issue_worker.models import CommandResult, CreatedIssue, Issue, PullRequest
 
 
@@ -32,6 +32,9 @@ def test_top_level_help_summarizes_commands():
     assert "enable              mark an issue ready for worker selection" in help_text
     assert "disable             remove worker queue labels from an issue" in help_text
     assert "reset               clear an issue run and mark it ready again" in help_text
+    assert (
+        "checkout            check out an issue's active A-Dev PR branch" in help_text
+    )
     assert "clean               remove old run directories and worktrees" in help_text
     assert "retry" not in help_text
 
@@ -138,6 +141,8 @@ def test_cli_init_infers_repo_and_branch_and_creates_labels(
         "ai-parent",
         "ai-child",
         "ai-parent-done",
+        "ai-parent-blocked",
+        "ai-parent-waiting",
         "blocked",
         "needs-human",
     }
@@ -619,6 +624,118 @@ def test_reset_closes_pr_deletes_state_and_marks_issue_ready(
     assert "issue #123 reset" in capsys.readouterr().out
 
 
+def _write_latest_job(
+    tmp_path: Path,
+    *,
+    issue_number: int = 123,
+    status: str = "pr_opened",
+    pr_url: str | None = "https://github.com/owner/repo/pull/5",
+    worktree_path: Path | None = None,
+    error_summary: str | None = None,
+) -> Path:
+    run_dir = tmp_path / ".a-dev" / "runs" / f"issue-{issue_number}"
+    run_dir.mkdir(parents=True)
+    payload = {
+        "issue_number": issue_number,
+        "issue_title": "Fix bug",
+        "branch_name": f"ai/issue-{issue_number}-fix-bug",
+        "worktree_path": str(
+            worktree_path or tmp_path / ".a-dev" / "worktrees" / f"issue-{issue_number}"
+        ),
+        "status": status,
+        "phase": "finalizing",
+        "started_at": "2026-04-23T00:00:00Z",
+        "base_branch": "main",
+        "stack_depth": 0,
+        "blocker_issue_numbers": [],
+        "finished_at": "2026-04-23T00:05:00Z",
+        "pr_url": pr_url,
+        "error_summary": error_summary,
+        "changed_files": ["src/app.py"],
+        "verifier_passed": status == "pr_opened",
+    }
+    (run_dir / "latest.json").write_text(json.dumps(payload), encoding="utf-8")
+    return run_dir
+
+
+def test_checkout_switches_to_active_pr_branch(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".a-dev.yaml").write_text("repo: owner/repo\n", encoding="utf-8")
+    _write_latest_job(tmp_path, issue_number=123)
+    captured = {}
+
+    def fake_switch_branch(branch: str, cwd: Path | None = None):
+        captured["branch"] = branch
+        captured["cwd"] = cwd
+
+    monkeypatch.setattr(cli, "switch_branch", fake_switch_branch)
+
+    assert cli.main(["checkout", "123"]) == 0
+
+    assert captured == {"branch": "ai/issue-123-fix-bug", "cwd": tmp_path}
+    output = capsys.readouterr().out
+    assert "checked out issue #123: ai/issue-123-fix-bug" in output
+    assert "PR: https://github.com/owner/repo/pull/5" in output
+
+
+def test_checkout_reuses_existing_worker_worktree(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".a-dev.yaml").write_text("repo: owner/repo\n", encoding="utf-8")
+    worktree = tmp_path / ".a-dev" / "worktrees" / "issue-123"
+    worktree.mkdir(parents=True)
+    _write_latest_job(tmp_path, issue_number=123, worktree_path=worktree)
+
+    def unexpected_switch_branch(branch: str, cwd: Path | None = None):
+        raise AssertionError("existing worker worktree should be reused")
+
+    monkeypatch.setattr(cli, "switch_branch", unexpected_switch_branch)
+    monkeypatch.setattr(cli, "current_branch", lambda path=None: "ai/issue-123-fix-bug")
+
+    assert cli.main(["checkout", "123"]) == 0
+
+    output = capsys.readouterr().out
+    assert f"issue #123 already checked out at {worktree}" in output
+    assert "PR: https://github.com/owner/repo/pull/5" in output
+
+
+def test_checkout_noops_and_highlights_failed_latest_run(
+    tmp_path: Path, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".a-dev.yaml").write_text("repo: owner/repo\n", encoding="utf-8")
+    _write_latest_job(
+        tmp_path,
+        issue_number=123,
+        status="verify_failed",
+        pr_url=None,
+        error_summary="pytest failed",
+    )
+
+    def unexpected_switch_branch(branch: str, cwd: Path | None = None):
+        raise AssertionError("failed issue should not be checked out")
+
+    monkeypatch.setattr(cli, "switch_branch", unexpected_switch_branch)
+
+    assert cli.main(["checkout", "123"]) == 0
+
+    output = capsys.readouterr().out
+    assert "issue #123 latest run failed (verify_failed): pytest failed" in output
+    assert "no successful PR to checkout" in output
+
+
+def test_checkout_noops_without_local_pr_state(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".a-dev.yaml").write_text("repo: owner/repo\n", encoding="utf-8")
+
+    def unexpected_switch_branch(branch: str, cwd: Path | None = None):
+        raise AssertionError("missing issue state should not be checked out")
+
+    monkeypatch.setattr(cli, "switch_branch", unexpected_switch_branch)
+
+    assert cli.main(["checkout", "123"]) == 0
+    assert "issue #123 has no local A-Dev PR state" in capsys.readouterr().out
+
+
 def test_status_reports_active_job_phase_and_diagnostic(
     tmp_path: Path, monkeypatch, capsys
 ):
@@ -1068,6 +1185,46 @@ def test_merge_ready_marks_pr_ready_before_merging(tmp_path: Path, monkeypatch, 
         ("merge", "https://github.com/owner/repo/pull/5", "merge", False, True),
     ]
     assert "merged PR for issue #123" in capsys.readouterr().out
+
+
+def test_merge_wake_reenables_parent_when_child_becomes_runnable():
+    config = config_from_dict({"repo": "owner/repo"})
+    parent = Issue(
+        10,
+        "Parent",
+        "",
+        ["ai-parent", "ai-parent-blocked"],
+        "open",
+    )
+    merged_child = Issue(11, "Merged child", "", ["ai-child"], "closed")
+    runnable_child = Issue(12, "Runnable child", "", ["ai-child"], "open")
+    captured = {"removed": [], "added": []}
+
+    class FakeWakeGH:
+        def list_issues(self, labels):
+            assert labels == ["ai-parent-blocked", "ai-parent-waiting"]
+            return [parent]
+
+        def sub_issues(self, number: int):
+            assert number == parent.number
+            return [merged_child, runnable_child]
+
+        def blocked_by(self, number: int):
+            assert number == runnable_child.number
+            return []
+
+        def remove_label(self, number: int, label: str):
+            captured["removed"].append((number, label))
+
+        def add_label(self, number: int, label: str):
+            captured["added"].append((number, label))
+
+    gh: Any = FakeWakeGH()
+    woke = cli._wake_blocked_parents_after_child_merge(gh, config, merged_child.number)
+
+    assert woke == [parent.number]
+    assert (parent.number, "ai-parent-blocked") in captured["removed"]
+    assert (parent.number, "ai-ready") in captured["added"]
 
 
 def test_merge_rejects_latest_non_pr_status(tmp_path: Path, monkeypatch, capsys):

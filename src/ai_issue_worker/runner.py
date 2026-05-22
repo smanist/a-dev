@@ -927,6 +927,10 @@ def _child_runnable(
     )
 
 
+def _child_open_blockers(gh: IssueDependencyClient, child: Issue) -> list[Issue]:
+    return _open_blockers(gh, child)
+
+
 def _parent_plan_data(gh: GHClient, parent: Issue, children: list[Issue]) -> dict:
     child_items = []
     for child in children:
@@ -1035,6 +1039,7 @@ def _finish_parent_success(
             gh.remove_label(parent.number, config.issue_selection.ready_label)
         except GHError:
             pass
+        _clear_parent_state_labels(gh, config, parent)
         gh.add_label(parent.number, config.issue_selection.parent_done_label)
         comment = run_dir / "parent-success-comment.md"
         lines = ["Parent orchestration opened all available child pull requests."]
@@ -1049,7 +1054,21 @@ def _finish_parent_success(
     _write_record(run_dir, record, "parent_done", None)
 
 
-def _finish_parent_waiting(
+def _clear_parent_state_labels(
+    gh: GHClient, config: WorkerConfig, parent: Issue
+) -> None:
+    for label in [
+        config.issue_selection.parent_blocked_label,
+        config.issue_selection.parent_waiting_label,
+        config.issue_selection.failed_label,
+    ]:
+        try:
+            gh.remove_label(parent.number, label)
+        except GHError:
+            pass
+
+
+def _finish_parent_open(
     gh: GHClient,
     config: WorkerConfig,
     parent: Issue,
@@ -1061,7 +1080,83 @@ def _finish_parent_waiting(
         gh.remove_label(parent.number, config.issue_selection.working_label)
     except GHError:
         pass
+    _clear_parent_state_labels(gh, config, parent)
     _write_record(run_dir, record, status, None)
+
+
+def _finish_parent_paused(
+    gh: GHClient,
+    config: WorkerConfig,
+    parent: Issue,
+    run_dir: Path,
+    record: JobRecord,
+    status: str,
+    label: str,
+) -> None:
+    try:
+        gh.remove_label(parent.number, config.issue_selection.working_label)
+    except GHError:
+        pass
+    try:
+        gh.remove_label(parent.number, config.issue_selection.ready_label)
+    except GHError:
+        pass
+    for stale in [
+        config.issue_selection.parent_blocked_label,
+        config.issue_selection.parent_waiting_label,
+    ]:
+        if stale != label:
+            try:
+                gh.remove_label(parent.number, stale)
+            except GHError:
+                pass
+    try:
+        gh.add_label(parent.number, label)
+    except GHError:
+        pass
+    _write_record(run_dir, record, status, None)
+
+
+def _finish_parent_failed(
+    gh: GHClient,
+    config: WorkerConfig,
+    parent: Issue,
+    run_dir: Path,
+    record: JobRecord,
+    message: str,
+) -> None:
+    try:
+        gh.remove_label(parent.number, config.issue_selection.ready_label)
+    except GHError:
+        pass
+    for label in [
+        config.issue_selection.parent_blocked_label,
+        config.issue_selection.parent_waiting_label,
+    ]:
+        try:
+            gh.remove_label(parent.number, label)
+        except GHError:
+            pass
+    _finalize_issue_failure(gh, config, parent, run_dir, message)
+    _write_record(run_dir, record, "parent_failed", message)
+
+
+def _next_parent_child_plan(
+    gh: GHClient,
+    config: WorkerConfig,
+    children: list[Issue],
+    attempted: set[int],
+    paths: dict[str, Path],
+) -> tuple[IssueWorkPlan | None, Issue | None]:
+    for child in children:
+        if not _child_runnable(child, config.issue_selection, attempted):
+            continue
+        child_plan = _work_plan_for_issue(
+            gh, child, config.issue_selection, config.base_branch, paths
+        )
+        if child_plan is not None:
+            return child_plan, child
+    return None, None
 
 
 def process_parent_issue(
@@ -1081,6 +1176,7 @@ def process_parent_issue(
             gh.remove_label(parent.number, config.issue_selection.failed_label)
         except GHError:
             pass
+        _clear_parent_state_labels(gh, config, parent)
         record.status = "working"
         record.phase = "working_label_added"
         write_job_record(run_dir, record, stamp)
@@ -1094,34 +1190,32 @@ def process_parent_issue(
         return EXIT_GH
 
     processed: set[int] = set()
+    failed_children: dict[int, int] = {}
     processed_children: list[Issue] = []
     attempts = 0
     while attempts < config.issue_selection.max_parent_children_per_run:
-        next_plan: IssueWorkPlan | None = None
-        next_child: Issue | None = None
-        for child in children:
-            if not _child_runnable(child, config.issue_selection, processed):
-                continue
-            child_plan = _work_plan_for_issue(
-                gh, child, config.issue_selection, config.base_branch, paths
-            )
-            if child_plan is not None:
-                next_plan = child_plan
-                next_child = child
-                break
+        attempted = processed | set(failed_children)
+        next_plan, next_child = _next_parent_child_plan(
+            gh, config, children, attempted, paths
+        )
         if next_plan is None or next_child is None:
             break
 
         follow_up = _parent_memory_context(parent, children, paths, run_dir)
         result = process_issue(config, next_plan, repo_root, paths, follow_up=follow_up)
+        attempts += 1
         if result != EXIT_OK:
-            message = f"Parent orchestration stopped because child issue #{next_child.number} failed with exit code {result}."
-            _finalize_issue_failure(gh, config, parent, run_dir, message)
-            _write_record(run_dir, record, "parent_failed", message)
-            return result
+            failed_children[next_child.number] = result
+            _append_parent_memory(
+                run_dir,
+                next_child,
+                None,
+                f"Child run failed with exit code {result}. See the child issue run artifacts.",
+            )
+            _write_parent_plan(run_dir, gh, parent, children)
+            continue
         processed.add(next_child.number)
         processed_children.append(next_child)
-        attempts += 1
         child_record = _latest_pr_job(paths, next_child.number)
         _append_parent_memory(
             run_dir,
@@ -1137,8 +1231,49 @@ def process_parent_issue(
         _finish_parent_success(gh, config, parent, run_dir, record, processed_children)
         return EXIT_OK
 
-    status = "parent_partial" if processed else "parent_waiting"
-    _finish_parent_waiting(gh, config, parent, run_dir, record, status)
+    attempted = processed | set(failed_children)
+    next_plan, _ = _next_parent_child_plan(gh, config, children, attempted, paths)
+    if next_plan is not None:
+        _finish_parent_open(gh, config, parent, run_dir, record, "parent_partial")
+        return EXIT_OK
+
+    unfinished = [
+        child
+        for child in children
+        if not _child_done(child, config.issue_selection, processed)
+    ]
+    if failed_children:
+        failed = ", ".join(
+            f"#{number} (exit {code})" for number, code in failed_children.items()
+        )
+        message = (
+            "Parent orchestration has no runnable child issues left after child "
+            f"failure(s): {failed}."
+        )
+        _finish_parent_failed(gh, config, parent, run_dir, record, message)
+        return next(iter(failed_children.values()))
+
+    if unfinished and all(_child_open_blockers(gh, child) for child in unfinished):
+        _finish_parent_paused(
+            gh,
+            config,
+            parent,
+            run_dir,
+            record,
+            "parent_blocked",
+            config.issue_selection.parent_blocked_label,
+        )
+        return EXIT_OK
+
+    _finish_parent_paused(
+        gh,
+        config,
+        parent,
+        run_dir,
+        record,
+        "parent_waiting",
+        config.issue_selection.parent_waiting_label,
+    )
     return EXIT_OK
 
 

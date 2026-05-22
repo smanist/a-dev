@@ -1233,8 +1233,64 @@ def test_process_parent_issue_stops_on_child_failure(monkeypatch, tmp_path: Path
 
     assert result == EXIT_VERIFY
     assert (60, "ai-failed") in captured["added"]
-    assert "child issue #61 failed" in captured["comments"][-1]
+    assert "child failure(s): #61" in captured["comments"][-1]
     record = load_job_record(paths["run_root"] / "issue-60" / "latest.json")
+    assert record.status == "parent_failed"
+
+
+def test_process_parent_issue_continues_runnable_siblings_after_child_failure(
+    monkeypatch, tmp_path: Path
+):
+    config = config_from_dict({"repo": "owner/repo"})
+    parent = Issue(65, "Parent", "Parent body", ["ai-ready", "ai-parent"], "open")
+    children = [
+        Issue(66, "Failing child", "Body", ["ai-child"], "open"),
+        Issue(67, "Runnable child", "Body", ["ai-child"], "open"),
+    ]
+    paths = {
+        "run_root": tmp_path / ".a-dev" / "runs",
+        "worktree_root": tmp_path / ".a-dev" / "worktrees",
+    }
+    processed = []
+
+    class FakeParentGH:
+        def __init__(self, repo: str):
+            self.repo = repo
+
+        def add_label(self, number: int, label: str):
+            pass
+
+        def remove_label(self, number: int, label: str):
+            pass
+
+        def comment(self, number: int, body_file: Path):
+            pass
+
+        def sub_issues(self, number: int):
+            return children
+
+        def blocked_by(self, number: int):
+            return []
+
+    def fake_process_issue(config, plan, repo_root, paths, follow_up=""):
+        processed.append(plan.issue.number)
+        if plan.issue.number == 66:
+            return EXIT_VERIFY
+        _write_pr_job(
+            paths["run_root"], plan.issue.number, f"ai/issue-{plan.issue.number}"
+        )
+        return EXIT_OK
+
+    monkeypatch.setattr("ai_issue_worker.runner.GHClient", FakeParentGH)
+    monkeypatch.setattr("ai_issue_worker.runner.process_issue", fake_process_issue)
+
+    result = process_parent_issue(
+        config, IssueWorkPlan(parent, "main", mode="parent"), tmp_path, paths
+    )
+
+    assert result == EXIT_VERIFY
+    assert processed == [66, 67]
+    record = load_job_record(paths["run_root"] / "issue-65" / "latest.json")
     assert record.status == "parent_failed"
 
 
@@ -1307,17 +1363,17 @@ def test_process_parent_issue_respects_stacked_pr_setting(monkeypatch, tmp_path:
         "run_root": tmp_path / ".a-dev" / "runs",
         "worktree_root": tmp_path / ".a-dev" / "worktrees",
     }
-    processed = []
+    captured = {"processed": [], "added": [], "removed": []}
 
     class FakeParentGH:
         def __init__(self, repo: str):
             self.repo = repo
 
         def add_label(self, number: int, label: str):
-            pass
+            captured["added"].append((number, label))
 
         def remove_label(self, number: int, label: str):
-            pass
+            captured["removed"].append((number, label))
 
         def comment(self, number: int, body_file: Path):
             pass
@@ -1329,7 +1385,7 @@ def test_process_parent_issue_respects_stacked_pr_setting(monkeypatch, tmp_path:
             return [blocker] if number == dependent.number else []
 
     def fake_process_issue(config, plan, repo_root, paths, follow_up=""):
-        processed.append(plan.issue.number)
+        captured["processed"].append(plan.issue.number)
         _write_pr_job(
             paths["run_root"], plan.issue.number, f"ai/issue-{plan.issue.number}"
         )
@@ -1343,9 +1399,11 @@ def test_process_parent_issue_respects_stacked_pr_setting(monkeypatch, tmp_path:
     )
 
     assert result == EXIT_OK
-    assert processed == [81]
+    assert captured["processed"] == [81]
+    assert (80, "ai-ready") in captured["removed"]
+    assert (80, "ai-parent-blocked") in captured["added"]
     record = load_job_record(paths["run_root"] / "issue-80" / "latest.json")
-    assert record.status == "parent_partial"
+    assert record.status == "parent_blocked"
 
 
 def test_diff_snapshot_changes_when_untracked_file_content_changes(tmp_path: Path):

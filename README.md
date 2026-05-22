@@ -125,6 +125,13 @@ later child prompts include prior child summaries and decisions. Downstream chil
 issues only run before blockers close when `issue_selection.allow_stacked_prs`
 allows the existing stacked-PR behavior.
 
+If all remaining child issues are dependency-blocked, the parent is marked
+`ai-parent-blocked` and `ai-ready` is removed so the scheduler does not spin on
+it. `a-dev merge` re-enables affected paused parents when a merged child leaves
+another child runnable. If one child fails, the parent continues with any other
+runnable children and only receives `ai-failed` when no runnable child work
+remains.
+
 Run one local cycle:
 
 ```bash
@@ -233,6 +240,17 @@ a-dev resume 123 --queue --comment "Address the latest review feedback and keep 
 ```
 
 Queued resume work is represented by the `ai-resume` label. The command above also posts the optional note as a GitHub issue comment so a later background run can include it in the continuation prompt.
+
+Check out the active A-Dev PR branch for an issue from local run state:
+
+```bash
+a-dev checkout 123
+```
+
+`checkout` only acts when the latest local run for the issue has an active
+A-Dev PR. If the worker worktree is still present, it prints that path instead
+of switching the current checkout. If there is no PR, or the latest run failed,
+it leaves the checkout unchanged and prints the current run status.
 
 After reviewing an opened PR locally, committing any manual edits, and pushing
 the branch, merge it explicitly from local worker state:

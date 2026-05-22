@@ -33,6 +33,10 @@ writes a `parent-plan.json` DAG snapshot, then processes eligible children
 serially through the same normal issue pipeline. Each child produces its own
 branch and draft PR. The parent run appends `parent-memory.md` after each child
 so later child prompts receive prior summaries, PR URLs, and preserved decisions.
+Parents with no currently runnable children are separated from hard failures:
+dependency-blocked parents are labeled `ai-parent-blocked`, other paused parents
+are labeled `ai-parent-waiting`, and child failures only label the parent
+`ai-failed` after all other runnable child work is drained.
 
 `a-dev start` runs the same `run_once()` loop inside `daemon.daemon_loop()`. The daemon itself is intentionally simple: PID file, status file, and a sleep loop.
 
@@ -43,7 +47,7 @@ so later child prompts receive prior summaries, PR URLs, and preserved decisions
 - Parses subcommands.
 - Handles config, `.gitignore`, and bundled VS Code task bootstrapping in `init`.
 - Drafts single or parent/sub-issue plans in `create`, including `--mode auto|single|parent`.
-- Exposes manual/operator commands such as `inspect`, `enable`, `disable`, `reset`, `resume`, and `clean`.
+- Exposes manual/operator commands such as `inspect`, `enable`, `disable`, `reset`, `resume`, `checkout`, and `clean`.
 - Starts or stops the daemon.
 - Delegates all issue execution to `runner.run_once()`.
 
@@ -55,6 +59,7 @@ This is the repo's center of gravity.
 - Applies model/reasoning overrides.
 - Computes workable issue plans, including stacked PR base-branch selection.
 - Dispatches parent issues to serial child orchestration while preserving one PR per child issue.
+- Pauses blocked parent issues with explicit labels instead of repeatedly selecting them.
 - Builds prompts and invokes Codex sessions.
 - Runs verifier and review/fix loops.
 - Generates a best-effort resume summary artifact after successful PR creation or update.

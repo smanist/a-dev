@@ -35,6 +35,7 @@ from .jobs import (
     write_job_record,
 )
 from .locking import lock_status
+from .models import Issue
 from .prompt import build_issue_draft_prompt
 from .runner import (
     RunOverrides,
@@ -63,6 +64,7 @@ A_DEV_GITIGNORE_ENTRIES = [".a-dev/"]
 VSCODE_TEMPLATE_FILES = ("settings.json", "tasks.json")
 CREATE_MODES = ("auto", "single", "parent")
 MERGE_METHODS = ("merge", "squash", "rebase")
+ACTIVE_PR_STATUSES = {"pr_opened", "pr_auto_merge_enabled"}
 
 
 @dataclass(frozen=True)
@@ -217,6 +219,16 @@ def _automation_label_specs(config) -> dict[str, tuple[str, str]]:
         labels.parent_done_label,
         "8250DF",
         "Parent issue orchestration has opened all available child pull requests.",
+    )
+    add(
+        labels.parent_blocked_label,
+        "B08300",
+        "Parent issue is paused because remaining children are dependency-blocked.",
+    )
+    add(
+        labels.parent_waiting_label,
+        "6A737D",
+        "Parent issue is paused with no child currently runnable.",
     )
     for label in labels.blocked_labels:
         add(
@@ -1359,8 +1371,13 @@ def cmd_enable(args) -> int:
         gh = GHClient(config.repo)
         issue = gh.view_issue(args.issue)
         labels = set(issue.labels)
-        if config.issue_selection.failed_label in labels:
-            gh.remove_label(args.issue, config.issue_selection.failed_label)
+        for label in [
+            config.issue_selection.failed_label,
+            config.issue_selection.parent_blocked_label,
+            config.issue_selection.parent_waiting_label,
+        ]:
+            if label in labels:
+                gh.remove_label(args.issue, label)
         if config.issue_selection.ready_label not in labels:
             gh.add_label(args.issue, config.issue_selection.ready_label)
     except (ConfigError, GHError) as exc:
@@ -1434,6 +1451,8 @@ def _reset_lifecycle_labels(config) -> list[str]:
         labels.pr_opened_label,
         labels.resume_label,
         labels.parent_done_label,
+        labels.parent_blocked_label,
+        labels.parent_waiting_label,
     ]
 
 
@@ -1529,6 +1548,79 @@ def cmd_reset(args) -> int:
     return 0
 
 
+def _latest_issue_job(run_root: Path, issue_number: int):
+    latest = issue_run_dir(run_root, issue_number) / "latest.json"
+    if not latest.exists():
+        return None
+    try:
+        job = load_job_record(latest)
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None
+    if job.issue_number != issue_number:
+        return None
+    return job
+
+
+def _failed_job_status(status: str) -> bool:
+    return "failed" in status or status in {
+        "verify_failed",
+        "agent_failed",
+        "diff_rejected",
+    }
+
+
+def cmd_checkout(args) -> int:
+    try:
+        config = _load(args.config)
+        paths = _paths(config, Path.cwd())
+        job = _latest_issue_job(paths["run_root"], args.issue)
+        if job is None:
+            print(f"issue #{args.issue} has no local A-Dev PR state")
+            return 0
+        if (
+            job.status not in ACTIVE_PR_STATUSES
+            or not job.pr_url
+            or not job.branch_name
+        ):
+            if _failed_job_status(job.status):
+                detail = f": {job.error_summary}" if job.error_summary else ""
+                print(
+                    f"issue #{args.issue} latest run failed ({job.status}){detail}; "
+                    "no successful PR to checkout"
+                )
+            elif job.pr_url:
+                print(
+                    f"issue #{args.issue} has PR {job.pr_url}, but latest run "
+                    f"status is {job.status}; leaving checkout unchanged"
+                )
+            else:
+                print(
+                    f"issue #{args.issue} has no successful PR to checkout; "
+                    f"latest run status is {job.status}"
+                )
+            return 0
+
+        worktree = Path(job.worktree_path)
+        if worktree.exists() and not _same_path(worktree, Path.cwd()):
+            branch = current_branch(worktree)
+            if branch != job.branch_name:
+                raise GitError(
+                    f"recorded worktree {worktree} is on branch {branch}, "
+                    f"expected {job.branch_name}"
+                )
+            print(f"issue #{args.issue} already checked out at {worktree}")
+            print(f"PR: {job.pr_url}")
+            return 0
+
+        switch_branch(job.branch_name, Path.cwd())
+    except (ConfigError, GitError) as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    print(f"checked out issue #{args.issue}: {job.branch_name}")
+    print(f"PR: {job.pr_url}")
+    return 0
+
+
 def cmd_resume(args) -> int:
     if args.queue:
         try:
@@ -1567,7 +1659,7 @@ def _latest_open_pr_job(run_root: Path, issue_number: int):
         if job.issue_number != issue_number:
             continue
         if (
-            job.status not in {"pr_opened", "pr_auto_merge_enabled"}
+            job.status not in ACTIVE_PR_STATUSES
             or not job.pr_url
             or not job.branch_name
         ):
@@ -1619,6 +1711,82 @@ def _pull_base_after_merge(base_branch: str, repo_root: Path) -> bool:
     ensure_worktree_clean(repo_root)
     pull_branch(base_branch, repo_root)
     return True
+
+
+def _child_done_for_parent_wake(issue: Issue, config) -> bool:
+    return (
+        issue.state.lower() == "closed"
+        or config.issue_selection.pr_opened_label in issue.labels
+    )
+
+
+def _child_runnable_for_parent_wake(gh: GHClient, config, issue: Issue) -> bool:
+    labels = set(issue.labels)
+    blocked = {
+        config.issue_selection.working_label,
+        config.issue_selection.failed_label,
+        *config.issue_selection.blocked_labels,
+    }
+    if (
+        issue.state.lower() != "open"
+        or config.issue_selection.pr_opened_label in labels
+        or labels & blocked
+    ):
+        return False
+    return not [
+        blocker
+        for blocker in gh.blocked_by(issue.number)
+        if blocker.state.lower() == "open"
+    ]
+
+
+def _wake_blocked_parents_after_child_merge(
+    gh: GHClient, config, child_number: int
+) -> list[int]:
+    try:
+        parents = gh.list_issues(
+            [
+                config.issue_selection.parent_blocked_label,
+                config.issue_selection.parent_waiting_label,
+            ]
+        )
+    except (AttributeError, GHError):
+        return []
+
+    woke: list[int] = []
+    for parent in parents:
+        if config.issue_selection.parent_label not in parent.labels:
+            continue
+        try:
+            children = gh.sub_issues(parent.number)
+        except (AttributeError, GHError):
+            continue
+        if child_number not in {child.number for child in children}:
+            continue
+        try:
+            runnable = any(
+                not _child_done_for_parent_wake(child, config)
+                and _child_runnable_for_parent_wake(gh, config, child)
+                for child in children
+            )
+        except GHError:
+            continue
+        if not runnable:
+            continue
+        for label in [
+            config.issue_selection.parent_blocked_label,
+            config.issue_selection.parent_waiting_label,
+        ]:
+            try:
+                gh.remove_label(parent.number, label)
+            except GHError:
+                pass
+        try:
+            gh.add_label(parent.number, config.issue_selection.ready_label)
+        except GHError:
+            continue
+        woke.append(parent.number)
+    return woke
 
 
 def _write_merge_record(paths: dict[str, Path], job, status: str, error: str | None):
@@ -1690,6 +1858,7 @@ def cmd_merge(args) -> int:
             gh.remove_label(args.issue, config.issue_selection.resume_label)
         except GHError:
             pass
+        woke_parents = _wake_blocked_parents_after_child_merge(gh, config, args.issue)
         _write_merge_record(paths, job, "pr_merged", None)
     except (ConfigError, GHError, GitError) as exc:
         print(exc, file=sys.stderr)
@@ -1701,6 +1870,9 @@ def cmd_merge(args) -> int:
         print(f"deleted branch {job.branch_name}")
     if pulled_base:
         print(f"pulled {job.base_branch or config.base_branch}")
+    if "woke_parents" in locals() and woke_parents:
+        joined = ", ".join(f"#{number}" for number in woke_parents)
+        print(f"re-enabled parent issue(s): {joined}")
     return 0
 
 
@@ -1716,12 +1888,7 @@ def cmd_clean(args) -> int:
         job for job in jobs if args.issue is None or job.issue_number == args.issue
     ]
     if args.failed:
-        selected = [
-            job
-            for job in selected
-            if "failed" in job.status
-            or job.status in {"verify_failed", "agent_failed", "diff_rejected"}
-        ]
+        selected = [job for job in selected if _failed_job_status(job.status)]
     if args.older_than:
         cutoff = datetime.utcnow() - parse_age(args.older_than)
         selected = [
@@ -1890,6 +2057,13 @@ def build_parser() -> argparse.ArgumentParser:
     resume.add_argument("--model")
     resume.add_argument("--reasoning", choices=REASONING_EFFORTS)
     resume.set_defaults(func=cmd_resume)
+
+    checkout = sub.add_parser(
+        "checkout", help="check out an issue's active A-Dev PR branch"
+    )
+    checkout.add_argument("issue", type=int)
+    checkout.add_argument("--config", default=DEFAULT_CONFIG_PATH)
+    checkout.set_defaults(func=cmd_checkout)
 
     merge = sub.add_parser("merge", help="merge an A-Dev PR from local run state")
     merge.add_argument("issue", type=int)
